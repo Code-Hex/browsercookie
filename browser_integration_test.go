@@ -349,7 +349,7 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir)
 	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
 	server.WaitForRequest(t, tc.name, browser.Output)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(3 * time.Second)
 	browser.Close(t)
 
 	cookieFiles := waitForFilesByBaseNameWithDebug(t, profileDir, "Cookies", browser.Output)
