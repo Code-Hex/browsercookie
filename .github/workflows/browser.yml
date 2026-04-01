@@ -20,14 +20,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - browser: brave
+            test_name: TestBraveReadsCookieFromRealBrowser
+            install_cask: brave-browser
           - browser: chrome
             test_name: TestChromeReadsCookieFromRealBrowser
+            install_cask: ""
           - browser: edge
             test_name: TestEdgeReadsCookieFromRealBrowser
+            install_cask: ""
           - browser: firefox
             test_name: TestFirefoxReadsCookieFromRealBrowser
+            install_cask: ""
+          - browser: opera
+            test_name: TestOperaReadsCookieFromRealBrowser
+            install_cask: opera
           - browser: safari
             test_name: TestSafariReadsCookieFromAutomationSession
+            install_cask: ""
+          - browser: vivaldi
+            test_name: TestVivaldiReadsCookieFromRealBrowser
+            install_cask: vivaldi
 
     steps:
       - name: Checkout
@@ -39,6 +52,10 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Install browser under test
+        if: matrix.install_cask != ''
+        run: brew install --cask "${{ matrix.install_cask }}"
 
       - name: Enable Safari WebDriver
         if: matrix.browser == 'safari'

@@ -12,12 +12,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,8 +28,8 @@ import (
 )
 
 const (
-	realBrowserEnv                = "BROWSERCOOKIE_REAL_BROWSER"
-	mockChromeSafeStoragePassword = "mock_password"
+	realBrowserEnv                  = "BROWSERCOOKIE_REAL_BROWSER"
+	mockChromiumSafeStoragePassword = "mock_password"
 )
 
 func TestChromeReadsCookieFromRealBrowser(t *testing.T) {
@@ -40,6 +43,14 @@ func TestChromeReadsCookieFromRealBrowser(t *testing.T) {
 	})
 }
 
+func TestBraveReadsCookieFromRealBrowser(t *testing.T) {
+	testChromiumReadsCookieFromCommandLineBrowser(t, chromiumCommandLineRealBrowserTestCase{
+		name:          "brave",
+		resolveBinary: resolveBraveBinary,
+		load:          Brave,
+	})
+}
+
 func TestEdgeReadsCookieFromRealBrowser(t *testing.T) {
 	testChromiumReadsCookieFromRealBrowser(t, chromiumRealBrowserTestCase{
 		name:          "edge",
@@ -48,6 +59,22 @@ func TestEdgeReadsCookieFromRealBrowser(t *testing.T) {
 		resolveBinary: resolveEdgeBinary,
 		resolveDriver: resolveEdgeDriverBinary,
 		load:          Edge,
+	})
+}
+
+func TestOperaReadsCookieFromRealBrowser(t *testing.T) {
+	testChromiumReadsCookieFromCommandLineBrowser(t, chromiumCommandLineRealBrowserTestCase{
+		name:          "opera",
+		resolveBinary: resolveOperaBinary,
+		load:          Opera,
+	})
+}
+
+func TestVivaldiReadsCookieFromRealBrowser(t *testing.T) {
+	testChromiumReadsCookieFromCommandLineBrowser(t, chromiumCommandLineRealBrowserTestCase{
+		name:          "vivaldi",
+		resolveBinary: resolveVivaldiBinary,
+		load:          Vivaldi,
 	})
 }
 
@@ -118,13 +145,20 @@ func (mockSecretProvider) GenericPassword(service, account string) ([]byte, erro
 	case "Chrome Safe Storage/Chrome",
 		"Chromium Safe Storage/Chromium",
 		"Brave Safe Storage/Brave",
+		"Opera Safe Storage/Opera",
 		"Vivaldi Safe Storage/Vivaldi",
 		"Microsoft Edge Safe Storage/Microsoft Edge",
 		"Microsoft Edge Dev Safe Storage/Microsoft Edge Dev":
-		return []byte(mockChromeSafeStoragePassword), nil
+		return []byte(mockChromiumSafeStoragePassword), nil
 	default:
 		return nil, fmt.Errorf("unexpected secret lookup %q/%q", service, account)
 	}
+}
+
+func resolveBraveBinary() (string, error) {
+	return resolveBinary("BROWSERCOOKIE_BRAVE_BIN", "", []string{
+		"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+	})
 }
 
 func resolveChromeBinary() (string, error) {
@@ -178,6 +212,12 @@ func resolveFirefoxBinary() (string, error) {
 	})
 }
 
+func resolveOperaBinary() (string, error) {
+	return resolveBinary("BROWSERCOOKIE_OPERA_BIN", "", []string{
+		"/Applications/Opera.app/Contents/MacOS/Opera",
+	})
+}
+
 func resolveGeckoDriverBinary() (string, error) {
 	if root := os.Getenv("GECKOWEBDRIVER"); root != "" {
 		candidate := filepath.Join(root, "geckodriver")
@@ -195,6 +235,12 @@ func resolveSafariDriverBinary() (string, error) {
 	return resolveBinary("BROWSERCOOKIE_SAFARIDRIVER_BIN", "safaridriver", []string{
 		"/System/Cryptexes/App/usr/bin/safaridriver",
 		"/usr/bin/safaridriver",
+	})
+}
+
+func resolveVivaldiBinary() (string, error) {
+	return resolveBinary("BROWSERCOOKIE_VIVALDI_BIN", "", []string{
+		"/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
 	})
 }
 
@@ -225,6 +271,12 @@ type chromiumRealBrowserTestCase struct {
 	optionsKey    string
 	resolveBinary func() (string, error)
 	resolveDriver func() (string, error)
+	load          func(...Option) ([]*http.Cookie, error)
+}
+
+type chromiumCommandLineRealBrowserTestCase struct {
+	name          string
+	resolveBinary func() (string, error)
 	load          func(...Option) ([]*http.Cookie, error)
 }
 
@@ -271,6 +323,42 @@ func testChromiumReadsCookieFromRealBrowser(t *testing.T, tc chromiumRealBrowser
 	}
 }
 
+func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumCommandLineRealBrowserTestCase) {
+	t.Helper()
+
+	skipUnlessRealBrowserCI(t)
+
+	browserBinary, err := tc.resolveBinary()
+	if err != nil {
+		t.Skipf("%s binary is not available: %v", tc.name, err)
+	}
+
+	restoreChromiumSecretProvider := chromiumSecretProvider
+	chromiumSecretProvider = func() secrets.Provider {
+		return mockSecretProvider{}
+	}
+	t.Cleanup(func() {
+		chromiumSecretProvider = restoreChromiumSecretProvider
+	})
+
+	cookieName := fmt.Sprintf("browsercookie-%d", time.Now().UnixNano())
+	cookieValue := "from-real-" + tc.name
+	server := startCookieServer(t, cookieName, cookieValue)
+
+	profileDir := t.TempDir()
+	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir)
+	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
+	server.WaitForRequest(t, tc.name, browser.Output)
+	time.Sleep(3 * time.Second)
+	browser.Close(t)
+
+	cookieFiles := waitForFilesByBaseNameWithDebug(t, profileDir, "Cookies", browser.Output)
+	cookie := waitForCookieValue(t, tc.load, tc.name, cookieFiles, cookieName, cookieValue, browser.Output)
+	if cookie == nil {
+		t.Fatalf("cookie %q not found in %v\n%s output:\n%s", cookieName, cookieFiles, tc.name, browser.Output())
+	}
+}
+
 func skipUnlessRealBrowserCI(t *testing.T) {
 	t.Helper()
 
@@ -282,10 +370,16 @@ func skipUnlessRealBrowserCI(t *testing.T) {
 	}
 }
 
-func startCookieServer(t *testing.T, cookieName, cookieValue string) *httptest.Server {
+type cookieServer struct {
+	*httptest.Server
+	requests chan struct{}
+}
+
+func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServer {
 	t.Helper()
 
 	expiresAt := time.Now().Add(2 * time.Hour).UTC()
+	requests := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.SetCookie(w, &http.Cookie{
 			Name:     cookieName,
@@ -295,9 +389,86 @@ func startCookieServer(t *testing.T, cookieName, cookieValue string) *httptest.S
 			Expires:  expiresAt,
 		})
 		_, _ = w.Write([]byte("<!doctype html><title>browsercookie</title>ok"))
+		select {
+		case requests <- struct{}{}:
+		default:
+		}
 	}))
 	t.Cleanup(server.Close)
-	return server
+	return &cookieServer{
+		Server:   server,
+		requests: requests,
+	}
+}
+
+type browserProcess struct {
+	cmd     *exec.Cmd
+	logFile *os.File
+	logPath string
+	name    string
+}
+
+func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profileDir string) *browserProcess {
+	t.Helper()
+
+	logFile, err := os.CreateTemp(t.TempDir(), browserName+"-*.log")
+	if err != nil {
+		t.Fatalf("create %s log file error = %v", browserName, err)
+	}
+
+	cmd := exec.Command(browserBinary, chromiumCommandLineArgs(profileDir)...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	process := &browserProcess{
+		cmd:     cmd,
+		logFile: logFile,
+		logPath: logFile.Name(),
+		name:    browserName,
+	}
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		t.Fatalf("start %s browser error = %v", browserName, err)
+	}
+	t.Cleanup(func() {
+		process.Close(t)
+	})
+	return process
+}
+
+func chromiumCommandLineArgs(profileDir string) []string {
+	args := append([]string(nil), chromiumLaunchArgs(profileDir)...)
+	return append(args, "about:blank")
+}
+
+func chromiumLaunchArgs(profileDir string) []string {
+	return []string{
+		"--headless",
+		"--disable-background-timer-throttling",
+		"--disable-backgrounding-occluded-windows",
+		"--disable-gpu",
+		"--disable-background-networking",
+		"--disable-client-side-phishing-detection",
+		"--disable-component-update",
+		"--disable-component-extensions-with-background-pages",
+		"--disable-default-apps",
+		"--disable-extensions",
+		"--disable-hang-monitor",
+		"--disable-popup-blocking",
+		"--disable-prompt-on-repost",
+		"--disable-sync",
+		"--enable-automation",
+		"--metrics-recording-only",
+		"--mute-audio",
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--no-service-autorun",
+		"--password-store=basic",
+		"--remote-debugging-port=0",
+		"--test-type=webdriver",
+		"--use-mock-keychain",
+		"--user-data-dir=" + profileDir,
+	}
 }
 
 func chromiumSessionPayload(browserName, optionsKey, browserBinary, profileDir string) map[string]any {
@@ -307,22 +478,7 @@ func chromiumSessionPayload(browserName, optionsKey, browserBinary, profileDir s
 				"browserName": browserName,
 				optionsKey: map[string]any{
 					"binary": browserBinary,
-					"args": []string{
-						"--headless",
-						"--disable-gpu",
-						"--disable-background-networking",
-						"--disable-component-update",
-						"--disable-component-extensions-with-background-pages",
-						"--disable-default-apps",
-						"--disable-extensions",
-						"--disable-sync",
-						"--metrics-recording-only",
-						"--mute-audio",
-						"--no-first-run",
-						"--no-default-browser-check",
-						"--password-store=basic",
-						"--user-data-dir=" + profileDir,
-					},
+					"args":   chromiumLaunchArgs(profileDir),
 				},
 			},
 		},
@@ -435,12 +591,12 @@ func webdriverRequestTimeout(driverName string) time.Duration {
 	case "geckodriver", "safaridriver":
 		return 30 * time.Second
 	default:
-		return 5 * time.Second
+		return 30 * time.Second
 	}
 }
 
 func (s *webDriverSession) waitUntilReady() error {
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest(http.MethodGet, s.baseURL+"/status", nil)
 		if err != nil {
@@ -541,14 +697,7 @@ func (s *webDriverSession) Close(t *testing.T) {
 }
 
 func (s *webDriverSession) Output() string {
-	if s.logPath == "" {
-		return ""
-	}
-	data, err := os.ReadFile(s.logPath)
-	if err != nil {
-		return ""
-	}
-	return string(data)
+	return readCommandOutput(s.logPath)
 }
 
 func (s *webDriverSession) StringCapability(key string) string {
@@ -615,9 +764,20 @@ func reserveLocalPort() (int, error) {
 }
 
 func waitForFilesByBaseName(t *testing.T, root string, baseName string) []string {
+	return waitForFilesByBaseNameWithDebug(t, root, baseName, func() string {
+		return ""
+	})
+}
+
+func waitForFilesByBaseNameWithDebug(
+	t *testing.T,
+	root string,
+	baseName string,
+	debugOutput func() string,
+) []string {
 	t.Helper()
 
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		paths, err := findFilesByBaseName(root, baseName)
 		if err == nil && len(paths) > 0 {
@@ -628,10 +788,74 @@ func waitForFilesByBaseName(t *testing.T, root string, baseName string) []string
 
 	_, err := findFilesByBaseName(root, baseName)
 	if err != nil {
-		t.Fatalf("findFilesByBaseName() error = %v", err)
+		t.Fatalf("findFilesByBaseName() error = %v\ndebug output:\n%s", err, debugOutput())
 	}
-	t.Fatalf("no %q file found under %s", baseName, root)
+	t.Fatalf("no %q file found under %s\ndebug output:\n%s", baseName, root, debugOutput())
 	return nil
+}
+
+func navigateChromiumBrowser(
+	t *testing.T,
+	browserName string,
+	profileDir string,
+	targetURL string,
+	debugOutput func() string,
+) {
+	t.Helper()
+
+	port := waitForChromiumDebugPort(t, profileDir, browserName, debugOutput)
+	client := &http.Client{Timeout: 5 * time.Second}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", port, url.QueryEscape(targetURL))
+
+	var lastErr error
+	for _, method := range []string{http.MethodPut, http.MethodGet} {
+		req, err := http.NewRequest(method, endpoint, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return
+		}
+		lastErr = fmt.Errorf("devtools %s %s returned %s", method, endpoint, resp.Status)
+	}
+
+	t.Fatalf("navigate %s browser via devtools error = %v\ndebug output:\n%s", browserName, lastErr, debugOutput())
+}
+
+func waitForChromiumDebugPort(
+	t *testing.T,
+	profileDir string,
+	browserName string,
+	debugOutput func() string,
+) int {
+	t.Helper()
+
+	portFile := filepath.Join(profileDir, "DevToolsActivePort")
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(portFile)
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) > 0 {
+				port, convErr := strconv.Atoi(strings.TrimSpace(lines[0]))
+				if convErr == nil {
+					return port
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %s DevToolsActivePort at %s\ndebug output:\n%s", browserName, portFile, debugOutput())
+	return 0
 }
 
 func waitForCookieValue(
@@ -645,7 +869,7 @@ func waitForCookieValue(
 ) *http.Cookie {
 	t.Helper()
 
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		cookies, err := load(WithCookieFiles(cookieFiles...))
@@ -661,7 +885,7 @@ func waitForCookieValue(
 		time.Sleep(250 * time.Millisecond)
 	}
 	if lastErr != nil {
-		t.Fatalf("%s() never exposed cookie %q: %v\nwebdriver output:\n%s", browserName, cookieName, lastErr, debugOutput())
+		t.Fatalf("%s() never exposed cookie %q: %v\ndebug output:\n%s", browserName, cookieName, lastErr, debugOutput())
 	}
 	return nil
 }
@@ -683,7 +907,7 @@ func waitForWebDriverCookie(
 ) (*webdriverCookie, bool) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		cookies, err := session.Cookies()
 		if err == nil {
@@ -717,6 +941,84 @@ func findFilesByBaseName(root, baseName string) ([]string, error) {
 	}
 	slices.Sort(paths)
 	return paths, nil
+}
+
+func readCommandOutput(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func (s *cookieServer) WaitForRequest(t *testing.T, browserName string, debugOutput func() string) {
+	t.Helper()
+
+	select {
+	case <-s.requests:
+		return
+	case <-time.After(20 * time.Second):
+		t.Fatalf("%s browser never reached %s\ndebug output:\n%s", browserName, s.URL, debugOutput())
+	}
+}
+
+func (p *browserProcess) Close(t *testing.T) {
+	t.Helper()
+
+	if p == nil {
+		return
+	}
+	defer func() {
+		if p.logFile != nil {
+			_ = p.logFile.Close()
+			p.logFile = nil
+		}
+	}()
+
+	if p.cmd == nil || p.cmd.ProcessState != nil {
+		return
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- p.cmd.Wait()
+	}()
+
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("%s browser wait error = %v\nbrowser output:\n%s", p.name, err, p.Output())
+			}
+		}
+	case <-time.After(5 * time.Second):
+		_ = p.cmd.Process.Kill()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("%s browser kill error = %v\nbrowser output:\n%s", p.name, err, p.Output())
+				}
+			}
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (p *browserProcess) Output() string {
+	if p == nil {
+		return ""
+	}
+	return readCommandOutput(p.logPath)
 }
 
 func findCookieByName(cookies []*http.Cookie, name string) *http.Cookie {

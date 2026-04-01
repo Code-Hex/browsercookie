@@ -200,6 +200,12 @@ func TestBrowserMetadataUsesPerBrowserSecrets(t *testing.T) {
 			wantService: "Microsoft Edge Dev Safe Storage",
 			wantAccount: "Microsoft Edge Dev",
 		},
+		{
+			name:        "opera",
+			browser:     OperaBrowser,
+			wantService: "Opera Safe Storage",
+			wantAccount: "Opera",
+		},
 	}
 
 	for _, tt := range tests {
