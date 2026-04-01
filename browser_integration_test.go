@@ -357,8 +357,6 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir)
 	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
 	server.WaitForRequest(t, tc.name, browser.Output)
-	time.Sleep(3 * time.Second)
-	browser.Close(t)
 
 	cookie, cookieFiles := waitForCookieValueInDiscoveredFiles(
 		t,
@@ -370,6 +368,7 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 		cookieValue,
 		browser.Output,
 	)
+	browser.Close(t)
 	if cookie == nil {
 		t.Fatalf("cookie %q not found in %v\n%s output:\n%s", cookieName, cookieFiles, tc.name, browser.Output())
 	}
