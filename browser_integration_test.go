@@ -382,7 +382,7 @@ func startWebDriverSession(t *testing.T, driverBinary string, payload map[string
 	cmd := exec.CommandContext(ctx, driverBinary, args...)
 	session := &webDriverSession{
 		cancel:     cancel,
-		client:     &http.Client{Timeout: 5 * time.Second},
+		client:     &http.Client{Timeout: webdriverRequestTimeout(driverName)},
 		cmd:        cmd,
 		baseURL:    fmt.Sprintf("http://127.0.0.1:%d", port),
 		driverName: driverName,
@@ -421,6 +421,15 @@ func webdriverProcessArgs(driverName string) []string {
 		return nil
 	default:
 		return []string{"--verbose"}
+	}
+}
+
+func webdriverRequestTimeout(driverName string) time.Duration {
+	switch driverName {
+	case "safaridriver":
+		return 30 * time.Second
+	default:
+		return 5 * time.Second
 	}
 }
 
