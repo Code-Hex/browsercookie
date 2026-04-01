@@ -358,6 +358,22 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
 	server.WaitForRequest(t, tc.name, browser.Output)
 
+	initial := waitForCookieValueInDiscoveredFilesWithin(
+		tc.load,
+		profileDir,
+		"Cookies",
+		cookieName,
+		cookieValue,
+		10*time.Second,
+	)
+	if initial.cookie != nil {
+		browser.Close(t)
+		return
+	}
+	t.Logf("%s cookie store was still empty before shutdown, retrying after close (paths=%v, err=%v)", tc.name, initial.paths, initial.err)
+	requestChromiumBrowserShutdown(t, tc.name, profileDir, browser.Output)
+	browser.Close(t)
+
 	cookie, cookieFiles := waitForCookieValueInDiscoveredFiles(
 		t,
 		tc.load,
@@ -368,7 +384,6 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 		cookieValue,
 		browser.Output,
 	)
-	browser.Close(t)
 	if cookie == nil {
 		t.Fatalf("cookie %q not found in %v\n%s output:\n%s", cookieName, cookieFiles, tc.name, browser.Output())
 	}
@@ -819,6 +834,14 @@ func navigateChromiumBrowser(
 	t.Helper()
 
 	port := waitForChromiumDebugPort(t, profileDir, browserName, debugOutput)
+	if err := navigateChromiumBrowserWithPort(port, targetURL); err == nil {
+		return
+	} else {
+		t.Fatalf("navigate %s browser via devtools error = %v\ndebug output:\n%s", browserName, err, debugOutput())
+	}
+}
+
+func navigateChromiumBrowserWithPort(port int, targetURL string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", port, url.QueryEscape(targetURL))
 
@@ -837,12 +860,54 @@ func navigateChromiumBrowser(
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return
+			return nil
 		}
 		lastErr = fmt.Errorf("devtools %s %s returned %s", method, endpoint, resp.Status)
 	}
+	return lastErr
+}
 
-	t.Fatalf("navigate %s browser via devtools error = %v\ndebug output:\n%s", browserName, lastErr, debugOutput())
+func requestChromiumBrowserShutdown(
+	t *testing.T,
+	browserName string,
+	profileDir string,
+	debugOutput func() string,
+) {
+	t.Helper()
+
+	port := waitForChromiumDebugPort(t, profileDir, browserName, debugOutput)
+	var lastErr error
+	for _, targetURL := range chromiumShutdownTargets(browserName) {
+		err := navigateChromiumBrowserWithPort(port, targetURL)
+		if err == nil || isExpectedChromiumShutdownError(err) {
+			return
+		}
+		lastErr = err
+	}
+	t.Logf("best-effort %s shutdown via DevTools failed: %v\ndebug output:\n%s", browserName, lastErr, debugOutput())
+}
+
+func chromiumShutdownTargets(browserName string) []string {
+	switch browserName {
+	case "brave":
+		return []string{"brave://quit", "chrome://quit"}
+	case "opera":
+		return []string{"opera://quit", "chrome://quit"}
+	case "vivaldi":
+		return []string{"vivaldi://quit", "chrome://quit"}
+	default:
+		return []string{"chrome://quit"}
+	}
+}
+
+func isExpectedChromiumShutdownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "EOF") ||
+		strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "connection reset by peer")
 }
 
 func waitForChromiumDebugPort(
@@ -917,7 +982,39 @@ func waitForCookieValueInDiscoveredFiles(
 ) (*http.Cookie, []string) {
 	t.Helper()
 
-	deadline := time.Now().Add(30 * time.Second)
+	result := waitForCookieValueInDiscoveredFilesWithin(
+		load,
+		root,
+		baseName,
+		cookieName,
+		cookieValue,
+		30*time.Second,
+	)
+	if result.cookie != nil {
+		return result.cookie, result.paths
+	}
+	if result.err != nil {
+		t.Fatalf("%s() never exposed cookie %q from %v: %v\ndebug output:\n%s", browserName, cookieName, result.paths, result.err, debugOutput())
+	}
+	t.Fatalf("cookie %q not found in %v\ndebug output:\n%s", cookieName, result.paths, debugOutput())
+	return nil, nil
+}
+
+type discoveredCookieWaitResult struct {
+	cookie *http.Cookie
+	paths  []string
+	err    error
+}
+
+func waitForCookieValueInDiscoveredFilesWithin(
+	load func(...Option) ([]*http.Cookie, error),
+	root string,
+	baseName string,
+	cookieName string,
+	cookieValue string,
+	timeout time.Duration,
+) discoveredCookieWaitResult {
+	deadline := time.Now().Add(timeout)
 	var (
 		lastErr   error
 		lastPaths []string
@@ -943,15 +1040,17 @@ func waitForCookieValueInDiscoveredFiles(
 		}
 		cookie := findCookieByName(cookies, cookieName)
 		if cookie != nil && cookie.Value == cookieValue {
-			return cookie, paths
+			return discoveredCookieWaitResult{
+				cookie: cookie,
+				paths:  append([]string(nil), paths...),
+			}
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	if lastErr != nil {
-		t.Fatalf("%s() never exposed cookie %q from %v: %v\ndebug output:\n%s", browserName, cookieName, lastPaths, lastErr, debugOutput())
+	return discoveredCookieWaitResult{
+		paths: append([]string(nil), lastPaths...),
+		err:   lastErr,
 	}
-	t.Fatalf("cookie %q not found in %v\ndebug output:\n%s", cookieName, lastPaths, debugOutput())
-	return nil, nil
 }
 
 type webdriverCookie struct {
@@ -1050,6 +1149,18 @@ func (p *browserProcess) Close(t *testing.T) {
 	go func() {
 		done <- p.cmd.Wait()
 	}()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("%s browser wait error = %v\nbrowser output:\n%s", p.name, err, p.Output())
+			}
+		}
+		return
+	case <-time.After(2 * time.Second):
+	}
 
 	if p.cmd.Process != nil {
 		_ = p.cmd.Process.Signal(syscall.SIGTERM)
