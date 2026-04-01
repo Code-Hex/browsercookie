@@ -12,12 +12,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,7 +345,10 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	server := startCookieServer(t, cookieName, cookieValue)
 
 	profileDir := t.TempDir()
-	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir, server.URL)
+	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir)
+	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
+	server.WaitForRequest(t, tc.name, browser.Output)
+	browser.Close(t)
 
 	cookieFiles := waitForFilesByBaseNameWithDebug(t, profileDir, "Cookies", browser.Output)
 	cookie := waitForCookieValue(t, tc.load, tc.name, cookieFiles, cookieName, cookieValue, browser.Output)
@@ -363,10 +368,16 @@ func skipUnlessRealBrowserCI(t *testing.T) {
 	}
 }
 
-func startCookieServer(t *testing.T, cookieName, cookieValue string) *httptest.Server {
+type cookieServer struct {
+	*httptest.Server
+	requests chan struct{}
+}
+
+func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServer {
 	t.Helper()
 
 	expiresAt := time.Now().Add(2 * time.Hour).UTC()
+	requests := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.SetCookie(w, &http.Cookie{
 			Name:     cookieName,
@@ -376,9 +387,16 @@ func startCookieServer(t *testing.T, cookieName, cookieValue string) *httptest.S
 			Expires:  expiresAt,
 		})
 		_, _ = w.Write([]byte("<!doctype html><title>browsercookie</title>ok"))
+		select {
+		case requests <- struct{}{}:
+		default:
+		}
 	}))
 	t.Cleanup(server.Close)
-	return server
+	return &cookieServer{
+		Server:   server,
+		requests: requests,
+	}
 }
 
 type browserProcess struct {
@@ -389,7 +407,7 @@ type browserProcess struct {
 	name    string
 }
 
-func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profileDir, url string) *browserProcess {
+func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profileDir string) *browserProcess {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -400,7 +418,7 @@ func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profi
 		t.Fatalf("create %s log file error = %v", browserName, err)
 	}
 
-	cmd := exec.CommandContext(ctx, browserBinary, chromiumCommandLineArgs(profileDir, url)...)
+	cmd := exec.CommandContext(ctx, browserBinary, chromiumCommandLineArgs(profileDir)...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -422,9 +440,9 @@ func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profi
 	return process
 }
 
-func chromiumCommandLineArgs(profileDir, url string) []string {
+func chromiumCommandLineArgs(profileDir string) []string {
 	args := append([]string(nil), chromiumLaunchArgs(profileDir)...)
-	return append(args, url)
+	return append(args, "about:blank")
 }
 
 func chromiumLaunchArgs(profileDir string) []string {
@@ -450,6 +468,7 @@ func chromiumLaunchArgs(profileDir string) []string {
 		"--no-default-browser-check",
 		"--no-service-autorun",
 		"--password-store=basic",
+		"--remote-debugging-port=0",
 		"--test-type=webdriver",
 		"--use-mock-keychain",
 		"--user-data-dir=" + profileDir,
@@ -779,6 +798,70 @@ func waitForFilesByBaseNameWithDebug(
 	return nil
 }
 
+func navigateChromiumBrowser(
+	t *testing.T,
+	browserName string,
+	profileDir string,
+	targetURL string,
+	debugOutput func() string,
+) {
+	t.Helper()
+
+	port := waitForChromiumDebugPort(t, profileDir, browserName, debugOutput)
+	client := &http.Client{Timeout: 5 * time.Second}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", port, url.QueryEscape(targetURL))
+
+	var lastErr error
+	for _, method := range []string{http.MethodPut, http.MethodGet} {
+		req, err := http.NewRequest(method, endpoint, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return
+		}
+		lastErr = fmt.Errorf("devtools %s %s returned %s", method, endpoint, resp.Status)
+	}
+
+	t.Fatalf("navigate %s browser via devtools error = %v\ndebug output:\n%s", browserName, lastErr, debugOutput())
+}
+
+func waitForChromiumDebugPort(
+	t *testing.T,
+	profileDir string,
+	browserName string,
+	debugOutput func() string,
+) int {
+	t.Helper()
+
+	portFile := filepath.Join(profileDir, "DevToolsActivePort")
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(portFile)
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) > 0 {
+				port, convErr := strconv.Atoi(strings.TrimSpace(lines[0]))
+				if convErr == nil {
+					return port
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %s DevToolsActivePort at %s\ndebug output:\n%s", browserName, portFile, debugOutput())
+	return 0
+}
+
 func waitForCookieValue(
 	t *testing.T,
 	load func(...Option) ([]*http.Cookie, error),
@@ -873,6 +956,17 @@ func readCommandOutput(path string) string {
 		return ""
 	}
 	return string(data)
+}
+
+func (s *cookieServer) WaitForRequest(t *testing.T, browserName string, debugOutput func() string) {
+	t.Helper()
+
+	select {
+	case <-s.requests:
+		return
+	case <-time.After(20 * time.Second):
+		t.Fatalf("%s browser never reached %s\ndebug output:\n%s", browserName, s.URL, debugOutput())
+	}
 }
 
 func (p *browserProcess) Close(t *testing.T) {
