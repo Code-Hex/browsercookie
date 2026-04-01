@@ -834,11 +834,11 @@ func navigateChromiumBrowser(
 	t.Helper()
 
 	port := waitForChromiumDebugPort(t, profileDir, browserName, debugOutput)
-	if err := navigateChromiumBrowserWithPort(port, targetURL); err == nil {
+	err := navigateChromiumBrowserWithPort(port, targetURL)
+	if err == nil {
 		return
-	} else {
-		t.Fatalf("navigate %s browser via devtools error = %v\ndebug output:\n%s", browserName, err, debugOutput())
 	}
+	t.Fatalf("navigate %s browser via devtools error = %v\ndebug output:\n%s", browserName, err, debugOutput())
 }
 
 func navigateChromiumBrowserWithPort(port int, targetURL string) error {
