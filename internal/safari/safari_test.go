@@ -28,8 +28,7 @@ func TestLoaderLoadParsesBinaryCookiesAcrossPages(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	loader := NewLoader()
-	cookies, err := loader.Load(SafariBrowser, []string{file}, nil)
+	cookies, err := loadBinaryCookieFiles([]string{file}, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -61,8 +60,7 @@ func TestLoaderLoadFiltersDomains(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	loader := NewLoader()
-	cookies, err := loader.Load(SafariBrowser, []string{file}, []string{"EXAMPLE.com"})
+	cookies, err := loadBinaryCookieFiles([]string{file}, []string{"EXAMPLE.com"})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
