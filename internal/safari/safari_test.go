@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const safariEpochToUnixOffset = int64(978307200)
+
 func TestLoaderLoadParsesBinaryCookiesAcrossPages(t *testing.T) {
 	t.Parallel()
 
@@ -129,8 +131,8 @@ func buildCookieRecord(host, name, path, value string, flags uint32, expiry time
 	binary.LittleEndian.PutUint32(record[20:24], uint32(nameOffset))
 	binary.LittleEndian.PutUint32(record[24:28], uint32(pathOffset))
 	binary.LittleEndian.PutUint32(record[28:32], uint32(valueOffset))
-	binary.LittleEndian.PutUint64(record[40:48], math.Float64bits(float64(expiry.Unix()-appleToUnixTime)))
-	binary.LittleEndian.PutUint64(record[48:56], math.Float64bits(float64(expiry.Unix()-appleToUnixTime)))
+	binary.LittleEndian.PutUint64(record[40:48], math.Float64bits(float64(expiry.Unix()-safariEpochToUnixOffset)))
+	binary.LittleEndian.PutUint64(record[48:56], math.Float64bits(float64(expiry.Unix()-safariEpochToUnixOffset)))
 
 	copy(record[hostOffset:], []byte(host))
 	record[nameOffset-1] = 0
