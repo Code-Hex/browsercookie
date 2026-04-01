@@ -150,8 +150,7 @@ func resolveEdgeDriverBinary() (string, error) {
 
 func resolveFirefoxBinary() (string, error) {
 	return resolveBinary("BROWSERCOOKIE_FIREFOX_BIN", "", []string{
-		"/Applications/Firefox.app/Contents/MacOS/firefox-bin",
-		"/Applications/Firefox.app",
+		"/Applications/Firefox.app/Contents/MacOS/firefox",
 	})
 }
 
