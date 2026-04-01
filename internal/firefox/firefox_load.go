@@ -20,26 +20,18 @@ import (
 
 // Load reads cookies from the configured Firefox profile.
 func (Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cookie, error) {
-	files := append([]string(nil), cookieFiles...)
-	if len(files) == 0 {
-		profiles := pathutil.Expand(browser.ProfilePatterns)
-		if len(profiles) == 0 {
-			return nil, errdefs.ErrNotFound
-		}
-		profilePath, err := parseProfile(profiles[0])
-		if err != nil {
-			return nil, err
-		}
-		files, err = defaultCookieFiles(profilePath)
-		if err != nil {
-			return nil, err
-		}
+	sources, err := resolveCookieSources(browser.ProfilePatterns, cookieFiles)
+	if err != nil {
+		return nil, err
 	}
 
 	var cookies []*http.Cookie
-	for _, file := range files {
-		loaded, err := loadCookieSource(file, domains)
+	for _, source := range sources {
+		loaded, err := loadCookieSource(source.path, domains)
 		if err != nil {
+			if source.optional && isOptionalSourceError(err) {
+				continue
+			}
 			return nil, err
 		}
 		cookies = append(cookies, loaded...)
@@ -49,6 +41,60 @@ func (Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cook
 	}
 	cookieutil.SortByExpiry(cookies)
 	return cookies, nil
+}
+
+type cookieSource struct {
+	path     string
+	optional bool
+}
+
+func resolveCookieSources(profilePatterns, cookieFiles []string) ([]cookieSource, error) {
+	if len(cookieFiles) > 0 {
+		sources := make([]cookieSource, 0, len(cookieFiles))
+		for _, file := range cookieFiles {
+			sources = append(sources, cookieSource{path: file})
+		}
+		return sources, nil
+	}
+	return discoverCookieSources(profilePatterns)
+}
+
+func discoverCookieSources(profilePatterns []string) ([]cookieSource, error) {
+	profiles := pathutil.Expand(profilePatterns)
+	if len(profiles) == 0 {
+		return nil, errdefs.ErrNotFound
+	}
+
+	var errs []error
+	for _, profile := range profiles {
+		profilePath, err := parseProfile(profile)
+		if err != nil {
+			if errors.Is(err, errdefs.ErrNotFound) {
+				continue
+			}
+			errs = append(errs, err)
+			continue
+		}
+
+		sources, err := defaultCookieSources(profilePath)
+		if err != nil {
+			if errors.Is(err, errdefs.ErrNotFound) {
+				continue
+			}
+			errs = append(errs, err)
+			continue
+		}
+		return sources, nil
+	}
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return nil, errdefs.ErrNotFound
+}
+
+func isOptionalSourceError(err error) bool {
+	return errors.Is(err, errdefs.ErrNotFound) || errors.Is(err, errdefs.ErrInvalidStore)
 }
 
 type iniSection struct {
@@ -161,18 +207,20 @@ func expandProfilePath(profileDir, path string) string {
 	return filepath.Clean(filepath.Join(profileDir, path))
 }
 
-func defaultCookieFiles(profilePath string) ([]string, error) {
+func defaultCookieSources(profilePath string) ([]cookieSource, error) {
 	if profilePath == "" {
 		return nil, errdefs.ErrNotFound
 	}
+
+	sources := []cookieSource{}
 	cookieFile := filepath.Join(profilePath, "cookies.sqlite")
-	if _, err := os.Stat(cookieFile); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errdefs.ErrNotFound
-		}
+	if _, err := os.Stat(cookieFile); err == nil {
+		sources = append(sources, cookieSource{path: cookieFile})
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	files := []string{cookieFile}
+
+	var sessionSources []string
 	for _, candidate := range []string{
 		filepath.Join(profilePath, "sessionstore-backups", "recovery.js"),
 		filepath.Join(profilePath, "sessionstore-backups", "recovery.json"),
@@ -182,10 +230,23 @@ func defaultCookieFiles(profilePath string) ([]string, error) {
 		filepath.Join(profilePath, "sessionstore.jsonlz4"),
 	} {
 		if _, err := os.Stat(candidate); err == nil {
-			files = append(files, candidate)
+			sessionSources = append(sessionSources, candidate)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
 	}
-	return files, nil
+	for i, candidate := range sessionSources {
+		optional := len(sources) > 0 || i < len(sessionSources)-1
+		sources = append(sources, cookieSource{
+			path:     candidate,
+			optional: optional,
+		})
+	}
+
+	if len(sources) == 0 {
+		return nil, errdefs.ErrNotFound
+	}
+	return sources, nil
 }
 
 func loadCookieSource(path string, domains []string) ([]*http.Cookie, error) {

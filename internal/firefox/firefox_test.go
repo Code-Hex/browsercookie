@@ -205,6 +205,187 @@ Default=1
 	}
 }
 
+func TestLoaderLoadTriesProfileCandidatesUntilOneWorks(t *testing.T) {
+	t.Parallel()
+
+	staleRoot := filepath.Join(t.TempDir(), "missing-profile-root")
+	goodRoot := t.TempDir()
+	profileDir := filepath.Join(goodRoot, "Profiles", "default-release")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	profilesINI := filepath.Join(goodRoot, "profiles.ini")
+	if err := os.WriteFile(profilesINI, []byte(`
+[Profile0]
+Name=default
+IsRelative=1
+Path=Profiles/default-release
+Default=1
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	expires := time.Unix(1_700_000_000, 0).UTC()
+	writeFirefoxDB(t, filepath.Join(profileDir, "cookies.sqlite"), expires)
+
+	loader := NewLoader()
+	cookies, err := loader.Load(Browser{
+		Name:            "firefox",
+		ProfilePatterns: []string{staleRoot, profilesINI},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if findCookie(cookies, "persistent") == nil {
+		t.Fatalf("cookies = %#v, want persistent cookie from second profile candidate", cookies)
+	}
+}
+
+func TestLoaderLoadUsesSessionStoreWhenCookiesSQLiteIsMissing(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "Profiles", "default-release")
+	if err := os.MkdirAll(filepath.Join(profileDir, "sessionstore-backups"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	profilesINI := filepath.Join(root, "profiles.ini")
+	if err := os.WriteFile(profilesINI, []byte(`
+[Profile0]
+Name=default
+IsRelative=1
+Path=Profiles/default-release
+Default=1
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	sessionFile := filepath.Join(profileDir, "sessionstore-backups", "recovery.jsonlz4")
+	writeSessionLZ4(t, sessionFile, sessionStore{
+		Cookies: []sessionCookie{
+			{
+				Host:   ".session-only.test",
+				Path:   "/",
+				Name:   "session-only",
+				Value:  "from-session-store",
+				Secure: true,
+			},
+		},
+	})
+
+	loader := NewLoader()
+	cookies, err := loader.Load(Browser{
+		Name:            "firefox",
+		ProfilePatterns: []string{profilesINI},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	cookie := findCookie(cookies, "session-only")
+	if cookie == nil || cookie.Value != "from-session-store" {
+		t.Fatalf("session-only cookie = %#v", cookie)
+	}
+}
+
+func TestLoaderLoadTriesLaterSessionStoreCandidatesWithoutCookiesSQLite(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "Profiles", "default-release")
+	if err := os.MkdirAll(filepath.Join(profileDir, "sessionstore-backups"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	profilesINI := filepath.Join(root, "profiles.ini")
+	if err := os.WriteFile(profilesINI, []byte(`
+[Profile0]
+Name=default
+IsRelative=1
+Path=Profiles/default-release
+Default=1
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	brokenSessionFile := filepath.Join(profileDir, "sessionstore-backups", "recovery.jsonlz4")
+	if err := os.WriteFile(brokenSessionFile, []byte("mozLz40\x00definitely-not-lz4"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	laterSessionFile := filepath.Join(profileDir, "sessionstore.jsonlz4")
+	writeSessionLZ4(t, laterSessionFile, sessionStore{
+		Cookies: []sessionCookie{
+			{
+				Host:   ".session-only.test",
+				Path:   "/",
+				Name:   "session-only",
+				Value:  "from-later-session-store",
+				Secure: true,
+			},
+		},
+	})
+
+	loader := NewLoader()
+	cookies, err := loader.Load(Browser{
+		Name:            "firefox",
+		ProfilePatterns: []string{profilesINI},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	cookie := findCookie(cookies, "session-only")
+	if cookie == nil || cookie.Value != "from-later-session-store" {
+		t.Fatalf("session-only cookie = %#v", cookie)
+	}
+}
+
+func TestLoaderLoadIgnoresBrokenOptionalSessionStore(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "Profiles", "default-release")
+	if err := os.MkdirAll(filepath.Join(profileDir, "sessionstore-backups"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	profilesINI := filepath.Join(root, "profiles.ini")
+	if err := os.WriteFile(profilesINI, []byte(`
+[Profile0]
+Name=default
+IsRelative=1
+Path=Profiles/default-release
+Default=1
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	expires := time.Unix(1_700_000_000, 0).UTC()
+	writeFirefoxDB(t, filepath.Join(profileDir, "cookies.sqlite"), expires)
+
+	sessionFile := filepath.Join(profileDir, "sessionstore-backups", "recovery.jsonlz4")
+	if err := os.WriteFile(sessionFile, []byte("mozLz40\x00definitely-not-lz4"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loader := NewLoader()
+	cookies, err := loader.Load(Browser{
+		Name:            "firefox",
+		ProfilePatterns: []string{profilesINI},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	cookie := findCookie(cookies, "persistent")
+	if cookie == nil || cookie.Value != "from-sqlite" {
+		t.Fatalf("persistent cookie = %#v", cookie)
+	}
+}
+
 func TestBrowserMetadataUsesFamilySpecificProfileRoots(t *testing.T) {
 	t.Parallel()
 
