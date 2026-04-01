@@ -27,7 +27,7 @@ func TestLoaderLoadParsesBinaryCookiesAcrossPages(t *testing.T) {
 	}
 
 	loader := NewLoader()
-	cookies, err := loader.Load(SafariBrowser, []string{file})
+	cookies, err := loader.Load(SafariBrowser, []string{file}, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -42,6 +42,33 @@ func TestLoaderLoadParsesBinaryCookiesAcrossPages(t *testing.T) {
 	}
 	if second == nil || second.Value != "two" || !second.Secure || !second.HttpOnly {
 		t.Fatalf("second cookie = %#v", second)
+	}
+}
+
+func TestLoaderLoadFiltersDomains(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "Cookies.binarycookies")
+	content := buildBinaryCookies(
+		buildPage(
+			buildCookieRecord(".example.com", "a", "/", "one", 0x1, time.Unix(1_700_000_000, 0).UTC()),
+			buildCookieRecord(".example.org", "b", "/", "two", 0x1, time.Unix(1_700_000_100, 0).UTC()),
+		),
+	)
+	if err := os.WriteFile(file, content, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loader := NewLoader()
+	cookies, err := loader.Load(SafariBrowser, []string{file}, []string{"EXAMPLE.com"})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cookies) != 1 {
+		t.Fatalf("len(cookies) = %d, want 1", len(cookies))
+	}
+	if cookies[0].Name != "a" {
+		t.Fatalf("cookie = %#v", cookies[0])
 	}
 }
 

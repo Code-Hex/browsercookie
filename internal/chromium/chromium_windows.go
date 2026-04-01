@@ -27,14 +27,25 @@ import (
 
 const unixToNTEpochOffsetMicr = int64(11644473600 * 1_000_000)
 
+const (
+	windowsEncryptedKeySource         windowsKeySource = "encrypted_key"
+	windowsAppBoundEncryptedKeySource windowsKeySource = "app_bound_encrypted_key"
+)
+
 type localState struct {
 	OSCrypt struct {
-		EncryptedKey string `json:"encrypted_key"`
+		EncryptedKey         string `json:"encrypted_key"`
+		AppBoundEncryptedKey string `json:"app_bound_encrypted_key"`
 	} `json:"os_crypt"`
 }
 
+type windowsKeyMaterial struct {
+	legacyKey            []byte
+	appBoundEncryptedKey string
+}
+
 // Load reads cookies from the configured Chromium browser store paths.
-func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error) {
+func (l Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cookie, error) {
 	if len(cookieFiles) == 0 {
 		cookieFiles = pathutil.Expand(browser.CookieFilePatterns)
 	}
@@ -44,42 +55,87 @@ func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, err
 
 	var cookies []*http.Cookie
 	for _, cookieFile := range cookieFiles {
-		key, err := loadMasterKey(cookieFile)
+		keys, err := loadKeyMaterial(browser, cookieFile)
 		if err != nil {
 			return nil, err
 		}
-		loaded, err := loadCookieFile(cookieFile, key)
+		loaded, err := loadCookieFile(cookieFile, keys, domains)
 		if err != nil {
 			return nil, err
 		}
 		cookies = append(cookies, loaded...)
 	}
+	if len(cookies) == 0 {
+		return nil, errdefs.ErrNotFound
+	}
 	cookieutil.SortByExpiry(cookies)
 	return cookies, nil
 }
 
-func loadMasterKey(cookieFile string) ([]byte, error) {
-	localStatePath, err := localStatePathForCookieFile(cookieFile)
+func loadKeyMaterial(browser Browser, cookieFile string) (windowsKeyMaterial, error) {
+	localStatePath, err := localStatePathForCookieFile(browser, cookieFile)
 	if err != nil {
-		return nil, err
+		return windowsKeyMaterial{}, err
 	}
-	raw, err := os.ReadFile(localStatePath)
+	state, err := parseLocalState(localStatePath)
+	if err != nil {
+		return windowsKeyMaterial{}, err
+	}
+	return resolveKeyMaterial(browser, state)
+}
+
+func parseLocalState(path string) (localState, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errdefs.ErrNotFound
+			return localState{}, errdefs.ErrNotFound
 		}
-		return nil, err
+		return localState{}, err
 	}
 
 	var state localState
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return nil, fmt.Errorf("%w: %v", errdefs.ErrInvalidStore, err)
+		return localState{}, fmt.Errorf("%w: %v", errdefs.ErrInvalidStore, err)
 	}
-	if state.OSCrypt.EncryptedKey == "" {
-		return nil, errdefs.ErrDecrypt
+	return state, nil
+}
+
+func resolveKeyMaterial(browser Browser, state localState) (windowsKeyMaterial, error) {
+	keySources := browser.WindowsKeySources
+	if len(keySources) == 0 {
+		keySources = []windowsKeySource{
+			windowsEncryptedKeySource,
+			windowsAppBoundEncryptedKeySource,
+		}
 	}
 
-	encryptedKey, err := base64.StdEncoding.DecodeString(state.OSCrypt.EncryptedKey)
+	var material windowsKeyMaterial
+	for _, source := range keySources {
+		switch source {
+		case windowsEncryptedKeySource:
+			if state.OSCrypt.EncryptedKey == "" {
+				continue
+			}
+			key, err := decodeLegacyMasterKey(state.OSCrypt.EncryptedKey)
+			if err != nil {
+				return windowsKeyMaterial{}, err
+			}
+			material.legacyKey = key
+		case windowsAppBoundEncryptedKeySource:
+			if state.OSCrypt.AppBoundEncryptedKey != "" {
+				material.appBoundEncryptedKey = state.OSCrypt.AppBoundEncryptedKey
+			}
+		}
+	}
+
+	if len(material.legacyKey) == 0 && material.appBoundEncryptedKey == "" {
+		return windowsKeyMaterial{}, errdefs.ErrDecrypt
+	}
+	return material, nil
+}
+
+func decodeLegacyMasterKey(encoded string) ([]byte, error) {
+	encryptedKey, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errdefs.ErrDecrypt, err)
 	}
@@ -92,19 +148,20 @@ func loadMasterKey(cookieFile string) ([]byte, error) {
 	return decryptDPAPI(encryptedKey)
 }
 
-func localStatePathForCookieFile(cookieFile string) (string, error) {
+func localStatePathForCookieFile(browser Browser, cookieFile string) (string, error) {
 	parent := filepath.Dir(cookieFile)
-	candidates := []string{
-		filepath.Join(parent, "..", "..", "Local State"),
-		filepath.Join(parent, "..", "Local State"),
-		filepath.Join(parent, "Local State"),
-	}
-	for _, candidate := range candidates {
+	candidates := make([]string, 0, len(browser.LocalStatePaths))
+	for _, path := range browser.LocalStatePaths {
+		candidate := filepath.Clean(filepath.Join(parent, filepath.FromSlash(path)))
+		candidates = append(candidates, candidate)
 		if _, err := os.Stat(candidate); err == nil {
-			return filepath.Clean(candidate), nil
+			return candidate, nil
 		}
 	}
-	return filepath.Clean(candidates[0]), nil
+	if len(candidates) == 0 {
+		return "", errdefs.ErrNotFound
+	}
+	return candidates[0], nil
 }
 
 func decryptDPAPI(data []byte) ([]byte, error) {
@@ -129,7 +186,7 @@ func decryptDPAPI(data []byte) ([]byte, error) {
 	return append([]byte(nil), plaintext...), nil
 }
 
-func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
+func loadCookieFile(path string, keys windowsKeyMaterial, domains []string) ([]*http.Cookie, error) {
 	db, cleanup, err := sqlitecopy.Open(path)
 	if err != nil {
 		return nil, err
@@ -144,7 +201,8 @@ func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
 	if version < 10 {
 		query = `SELECT host_key, path, secure, expires_utc, name, value, encrypted_value, is_httponly FROM cookies`
 	}
-	rows, err := db.Query(query)
+	query, args := cookieutil.SQLiteWhere(query, "host_key", domains)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "no such column") {
 			return nil, errdefs.ErrInvalidStore
@@ -168,7 +226,7 @@ func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
 		if err := rows.Scan(&host, &path, &secure, &expires, &name, &value, &enc, &httpOnly); err != nil {
 			return nil, err
 		}
-		decrypted, err := decryptValue(value, enc, key, version >= 24)
+		decrypted, err := decryptValue(value, enc, keys, version >= 24)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +272,7 @@ func chromiumExpiry(value int64) time.Time {
 	return time.UnixMicro(value - unixToNTEpochOffsetMicr).UTC()
 }
 
-func decryptValue(plain string, encrypted []byte, key []byte, hasDomainHash bool) (string, error) {
+func decryptValue(plain string, encrypted []byte, keys windowsKeyMaterial, hasDomainHash bool) (string, error) {
 	if plain != "" || len(encrypted) < 3 {
 		return plain, nil
 	}
@@ -223,7 +281,10 @@ func decryptValue(plain string, encrypted []byte, key []byte, hasDomainHash bool
 	if prefix != "v10" && prefix != "v11" && prefix != "v20" {
 		return plain, nil
 	}
-	if len(key) == 0 {
+	if prefix == "v20" {
+		return "", appBoundUnsupportedError(keys)
+	}
+	if len(keys.legacyKey) == 0 {
 		return "", errdefs.ErrDecrypt
 	}
 
@@ -234,7 +295,7 @@ func decryptValue(plain string, encrypted []byte, key []byte, hasDomainHash bool
 	nonce := payload[:12]
 	ciphertext := payload[12:]
 
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(keys.legacyKey)
 	if err != nil {
 		return "", err
 	}
@@ -246,10 +307,20 @@ func decryptValue(plain string, encrypted []byte, key []byte, hasDomainHash bool
 	if err != nil {
 		return "", errdefs.ErrDecrypt
 	}
-	if (hasDomainHash || prefix == "v20") && len(plaintext) >= 32 {
+	if hasDomainHash {
+		if len(plaintext) < 32 {
+			return "", errdefs.ErrDecrypt
+		}
 		plaintext = plaintext[32:]
 	}
 	return string(plaintext), nil
+}
+
+func appBoundUnsupportedError(keys windowsKeyMaterial) error {
+	if keys.appBoundEncryptedKey != "" {
+		return fmt.Errorf("%w: chromium v20 cookies require app-bound decryption via the browser elevation service", errdefs.ErrUnsupported)
+	}
+	return fmt.Errorf("%w: chromium v20 cookies are app-bound encrypted and no supported key material is available", errdefs.ErrUnsupported)
 }
 
 func normalizePath(path string) string {

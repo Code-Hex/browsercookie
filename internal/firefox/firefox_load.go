@@ -19,7 +19,7 @@ import (
 )
 
 // Load reads cookies from the configured Firefox profile.
-func (Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error) {
+func (Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cookie, error) {
 	files := append([]string(nil), cookieFiles...)
 	if len(files) == 0 {
 		profiles := pathutil.Expand(browser.ProfilePatterns)
@@ -38,11 +38,14 @@ func (Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error
 
 	var cookies []*http.Cookie
 	for _, file := range files {
-		loaded, err := loadCookieSource(file)
+		loaded, err := loadCookieSource(file, domains)
 		if err != nil {
 			return nil, err
 		}
 		cookies = append(cookies, loaded...)
+	}
+	if len(cookies) == 0 {
+		return nil, errdefs.ErrNotFound
 	}
 	cookieutil.SortByExpiry(cookies)
 	return cookies, nil
@@ -169,7 +172,7 @@ func defaultCookieFiles(profilePath string) ([]string, error) {
 		}
 		return nil, err
 	}
-	files := []string{}
+	files := []string{cookieFile}
 	for _, candidate := range []string{
 		filepath.Join(profilePath, "sessionstore-backups", "recovery.js"),
 		filepath.Join(profilePath, "sessionstore-backups", "recovery.json"),
@@ -182,18 +185,21 @@ func defaultCookieFiles(profilePath string) ([]string, error) {
 			files = append(files, candidate)
 		}
 	}
-	files = append(files, cookieFile)
 	return files, nil
 }
 
-func loadCookieSource(path string) ([]*http.Cookie, error) {
+func loadCookieSource(path string, domains []string) ([]*http.Cookie, error) {
 	if filepath.Ext(path) == ".sqlite" {
-		return loadSQLiteCookies(path)
+		return loadSQLiteCookies(path, domains)
 	}
-	return loadSessionCookies(path)
+	cookies, err := loadSessionCookies(path)
+	if err != nil {
+		return nil, err
+	}
+	return cookieutil.FilterByDomains(cookies, domains), nil
 }
 
-func loadSQLiteCookies(path string) ([]*http.Cookie, error) {
+func loadSQLiteCookies(path string, domains []string) ([]*http.Cookie, error) {
 	db, cleanup, err := sqlitecopy.Open(path)
 	if err != nil {
 		return nil, err
@@ -201,10 +207,12 @@ func loadSQLiteCookies(path string) ([]*http.Cookie, error) {
 	defer func() { _ = cleanup() }()
 
 	query := `SELECT host, path, isSecure, expiry, name, value, isHttpOnly FROM moz_cookies`
-	rows, err := db.Query(query)
+	query, args := cookieutil.SQLiteWhere(query, "host", domains)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such column") {
-			rows, err = db.Query(`SELECT host, path, isSecure, expiry, name, value FROM moz_cookies`)
+			query, args = cookieutil.SQLiteWhere(`SELECT host, path, isSecure, expiry, name, value FROM moz_cookies`, "host", domains)
+			rows, err = db.Query(query, args...)
 		}
 	}
 	if err != nil {

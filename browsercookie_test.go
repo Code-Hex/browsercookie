@@ -113,30 +113,29 @@ func TestJarKeepsDeterministicOverwriteOrder(t *testing.T) {
 	}
 }
 
-func TestFilterCookiesReturnsNotFoundWhenDomainsMiss(t *testing.T) {
-	filtered, err := filterCookies([]*http.Cookie{
-		{Name: "session", Domain: ".example.com", Path: "/"},
-	}, []string{"example.org"})
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("filterCookies() error = %v, want ErrNotFound", err)
-	}
-	if filtered != nil {
-		t.Fatalf("filterCookies() = %v, want nil", filtered)
-	}
-}
+func TestLoadForwardsWithDomainsToBrowserLoaders(t *testing.T) {
+	original := loadOrder
+	t.Cleanup(func() { loadOrder = original })
 
-func TestFilterCookiesKeepsMatchingDomains(t *testing.T) {
-	filtered, err := filterCookies([]*http.Cookie{
-		{Name: "root", Domain: ".example.com", Path: "/"},
-		{Name: "other", Domain: ".example.org", Path: "/"},
-	}, []string{"example.com"})
+	loadOrder = []browserLoadCall{
+		{
+			name: "present",
+			load: func(opts options) ([]*http.Cookie, error) {
+				if len(opts.domains) != 1 || opts.domains[0] != "example.com" {
+					t.Fatalf("domains = %v, want %v", opts.domains, []string{"example.com"})
+				}
+				return []*http.Cookie{
+					{Name: "session", Domain: ".example.com", Path: "/", Expires: time.Unix(10, 0).UTC()},
+				}, nil
+			},
+		},
+	}
+
+	cookies, err := Load(WithDomains("example.com"))
 	if err != nil {
-		t.Fatalf("filterCookies() error = %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	if len(filtered) != 1 {
-		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
-	}
-	if filtered[0].Name != "root" {
-		t.Fatalf("filtered cookie = %#v", filtered[0])
+	if len(cookies) != 1 || cookies[0].Name != "session" {
+		t.Fatalf("cookies = %#v", cookies)
 	}
 }

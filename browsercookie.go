@@ -178,53 +178,45 @@ func loadOperaGX(cfg options) ([]*http.Cookie, error) {
 
 func loadFirefox(cfg options) ([]*http.Cookie, error) {
 	loader := firefox.NewLoader()
-	cookies, err := loader.Load(firefox.FirefoxBrowser, cfg.cookieFilesCopy())
+	cookies, err := loader.Load(firefox.FirefoxBrowser, cfg.cookieFilesCopy(), cfg.domainsCopy())
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", firefox.FirefoxBrowser.Name, err)
 	}
-	return filterCookies(cookies, cfg.domainsCopy())
+	return cookies, nil
 }
 
 func loadLibreWolf(cfg options) ([]*http.Cookie, error) {
 	loader := firefox.NewLoader()
-	cookies, err := loader.Load(firefox.LibreWolfBrowser, cfg.cookieFilesCopy())
+	cookies, err := loader.Load(firefox.LibreWolfBrowser, cfg.cookieFilesCopy(), cfg.domainsCopy())
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", firefox.LibreWolfBrowser.Name, err)
 	}
-	return filterCookies(cookies, cfg.domainsCopy())
+	return cookies, nil
 }
 
 func loadZen(cfg options) ([]*http.Cookie, error) {
 	loader := firefox.NewLoader()
-	cookies, err := loader.Load(firefox.ZenBrowser, cfg.cookieFilesCopy())
+	cookies, err := loader.Load(firefox.ZenBrowser, cfg.cookieFilesCopy(), cfg.domainsCopy())
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", firefox.ZenBrowser.Name, err)
 	}
-	return filterCookies(cookies, cfg.domainsCopy())
+	return cookies, nil
 }
 
 func loadSafari(cfg options) ([]*http.Cookie, error) {
 	loader := safari.NewLoader()
-	cookies, err := loader.Load(safari.SafariBrowser, cfg.cookieFilesCopy())
+	cookies, err := loader.Load(safari.SafariBrowser, cfg.cookieFilesCopy(), cfg.domainsCopy())
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", safari.SafariBrowser.Name, err)
 	}
-	return filterCookies(cookies, cfg.domainsCopy())
+	return cookies, nil
 }
 
 func loadChromiumBrowser(browser chromiumloader.Browser, cfg options) ([]*http.Cookie, error) {
 	loader := chromiumloader.NewLoader(chromiumSecretProvider())
-	cookies, err := loader.Load(browser, cfg.cookieFilesCopy())
+	cookies, err := loader.Load(browser, cfg.cookieFilesCopy(), cfg.domainsCopy())
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", browser.Name, err)
 	}
-	return filterCookies(cookies, cfg.domainsCopy())
-}
-
-func filterCookies(cookies []*http.Cookie, domains []string) ([]*http.Cookie, error) {
-	filtered := cookieutil.FilterByDomains(cookies, domains)
-	if len(filtered) == 0 {
-		return nil, ErrNotFound
-	}
-	return filtered, nil
+	return cookies, nil
 }

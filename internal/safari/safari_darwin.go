@@ -21,7 +21,7 @@ import (
 const appleToUnixTime = int64(978307200)
 
 // Load reads cookies from Safari binary cookie stores.
-func (Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error) {
+func (Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cookie, error) {
 	files := append([]string(nil), cookieFiles...)
 	if len(files) == 0 {
 		files = pathutil.Expand(browser.CookieFilePatterns)
@@ -37,6 +37,10 @@ func (Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error
 			return nil, err
 		}
 		cookies = append(cookies, loaded...)
+	}
+	cookies = cookieutil.FilterByDomains(cookies, domains)
+	if len(cookies) == 0 {
+		return nil, errdefs.ErrNotFound
 	}
 	cookieutil.SortByExpiry(cookies)
 	return cookies, nil

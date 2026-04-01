@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/sha1"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestLoaderLoadFallsBackToPeanutsOnLinux(t *testing.T) {
 	})
 
 	loader := NewLoader(nil)
-	cookies, err := loader.Load(Browser{Name: "chrome"}, []string{cookieFile})
+	cookies, err := loader.Load(Browser{Name: "chrome"}, []string{cookieFile}, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -44,6 +45,63 @@ func TestLoaderLoadFallsBackToPeanutsOnLinux(t *testing.T) {
 	if cookies[0].Value != "from-linux" {
 		t.Fatalf("cookie value = %q, want %q", cookies[0].Value, "from-linux")
 	}
+}
+
+func TestLinuxPasswordsUsesConfiguredOrderAndDedupes(t *testing.T) {
+	t.Parallel()
+
+	original := newLinuxKeyringClient
+	t.Cleanup(func() { newLinuxKeyringClient = original })
+
+	newLinuxKeyringClient = func() (linuxKeyringClient, error) {
+		return fakeLinuxKeyringClient{
+			secretPasswords: map[string][]byte{
+				"chrome_libsecret_os_crypt_password_v2|arc": []byte("first"),
+				"chrome_libsecret_os_crypt_password_v1|arc": []byte("first"),
+			},
+			kwalletPasswords: map[string][]byte{
+				"Arc Keys|Arc Safe Storage": []byte("second"),
+			},
+		}, nil
+	}
+
+	passwords := linuxPasswords(Browser{
+		LinuxLibsecretRefs: []linuxLibsecretRef{
+			{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "arc"},
+			{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "arc"},
+		},
+		LinuxKWalletRefs: []linuxKWalletRef{
+			{Folder: "Arc Keys", Key: "Arc Safe Storage"},
+		},
+	})
+
+	if len(passwords) != 2 {
+		t.Fatalf("len(passwords) = %d, want 2", len(passwords))
+	}
+	if string(passwords[0]) != "first" || string(passwords[1]) != "second" {
+		t.Fatalf("passwords = %q, want first then second", passwords)
+	}
+}
+
+type fakeLinuxKeyringClient struct {
+	secretPasswords  map[string][]byte
+	kwalletPasswords map[string][]byte
+}
+
+func (f fakeLinuxKeyringClient) SecretPassword(schema, application string) ([]byte, error) {
+	password, ok := f.secretPasswords[schema+"|"+application]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return append([]byte(nil), password...), nil
+}
+
+func (f fakeLinuxKeyringClient) KWalletPassword(folder, key string) ([]byte, error) {
+	password, ok := f.kwalletPasswords[folder+"|"+key]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return append([]byte(nil), password...), nil
 }
 
 type linuxChromiumRow struct {

@@ -23,7 +23,7 @@ func expiryKey(cookie *http.Cookie) int64 {
 
 // FilterByDomains returns cookies that match one of the requested domains.
 func FilterByDomains(cookies []*http.Cookie, domains []string) []*http.Cookie {
-	matchers := normalizeDomains(domains)
+	matchers := NormalizeDomains(domains)
 	if len(matchers) == 0 {
 		return append([]*http.Cookie(nil), cookies...)
 	}
@@ -40,7 +40,8 @@ func FilterByDomains(cookies []*http.Cookie, domains []string) []*http.Cookie {
 	return filtered
 }
 
-func normalizeDomains(domains []string) []string {
+// NormalizeDomains canonicalizes domains for case-insensitive matching.
+func NormalizeDomains(domains []string) []string {
 	seen := map[string]struct{}{}
 	normalized := make([]string, 0, len(domains))
 	for _, domain := range domains {
@@ -68,4 +69,40 @@ func domainMatches(cookieDomain string, wanted []string) bool {
 		}
 	}
 	return false
+}
+
+// SQLiteDomainClause returns a WHERE clause fragment and args for exact-or-suffix matching.
+func SQLiteDomainClause(column string, domains []string) (string, []any) {
+	normalized := NormalizeDomains(domains)
+	if len(normalized) == 0 {
+		return "", nil
+	}
+
+	// Trim the leading dot Chromium/Firefox like to store, then compare case-insensitively.
+	normalizedColumn := "LOWER(LTRIM(" + column + ", '.'))"
+	parts := make([]string, 0, len(normalized))
+	args := make([]any, 0, len(normalized)*2)
+	for _, domain := range normalized {
+		parts = append(parts, "("+normalizedColumn+" = ? OR "+normalizedColumn+" LIKE ? ESCAPE '\\')")
+		args = append(args, domain, "%."+escapeSQLiteLike(domain))
+	}
+	return strings.Join(parts, " OR "), args
+}
+
+func escapeSQLiteLike(value string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	)
+	return replacer.Replace(value)
+}
+
+// SQLiteWhere appends a WHERE clause to a base query when domains are present.
+func SQLiteWhere(query, column string, domains []string) (string, []any) {
+	clause, args := SQLiteDomainClause(column, domains)
+	if clause == "" {
+		return query, nil
+	}
+	return query + " WHERE " + clause, args
 }

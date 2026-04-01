@@ -3,15 +3,18 @@
 package chromium
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Code-Hex/browsercookie/internal/errdefs"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,7 +36,7 @@ func TestLoadCookieFileReadsGCMCookiesOnWindows(t *testing.T) {
 		},
 	})
 
-	cookies, err := loadCookieFile(cookieFile, key)
+	cookies, err := loadCookieFile(cookieFile, windowsKeyMaterial{legacyKey: key}, nil)
 	if err != nil {
 		t.Fatalf("loadCookieFile() error = %v", err)
 	}
@@ -61,12 +64,45 @@ func TestLocalStatePathForCookieFilePrefersUserDataRoot(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	got, err := localStatePathForCookieFile(cookieFile)
+	got, err := localStatePathForCookieFile(ChromeBrowser, cookieFile)
 	if err != nil {
 		t.Fatalf("localStatePathForCookieFile() error = %v", err)
 	}
 	if got != localState {
 		t.Fatalf("localStatePathForCookieFile() = %q, want %q", got, localState)
+	}
+}
+
+func TestResolveKeyMaterialTracksAppBoundKey(t *testing.T) {
+	t.Parallel()
+
+	material, err := resolveKeyMaterial(Browser{
+		WindowsKeySources: []windowsKeySource{windowsAppBoundEncryptedKeySource},
+	}, localState{
+		OSCrypt: struct {
+			EncryptedKey         string `json:"encrypted_key"`
+			AppBoundEncryptedKey string `json:"app_bound_encrypted_key"`
+		}{
+			AppBoundEncryptedKey: "app-bound",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveKeyMaterial() error = %v", err)
+	}
+	if material.appBoundEncryptedKey != "app-bound" {
+		t.Fatalf("appBoundEncryptedKey = %q, want %q", material.appBoundEncryptedKey, "app-bound")
+	}
+}
+
+func TestDecryptValueRejectsV20CookiesAsUnsupported(t *testing.T) {
+	t.Parallel()
+
+	encrypted := append([]byte("v20"), bytes.Repeat([]byte{0}, 32)...)
+	_, err := decryptValue("", encrypted, windowsKeyMaterial{
+		appBoundEncryptedKey: "app-bound",
+	}, false)
+	if !errors.Is(err, errdefs.ErrUnsupported) {
+		t.Fatalf("decryptValue() error = %v, want ErrUnsupported", err)
 	}
 }
 

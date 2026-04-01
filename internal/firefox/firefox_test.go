@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Code-Hex/browsercookie/internal/browsercfg"
 	"github.com/pierrec/lz4/v4"
 	_ "modernc.org/sqlite"
 )
@@ -54,7 +55,7 @@ Default=1
 	})
 
 	loader := NewLoader()
-	cookies, err := loader.Load(Browser{Name: "firefox", ProfilePatterns: []string{profilesINI}}, nil)
+	cookies, err := loader.Load(Browser{Name: "firefox", ProfilePatterns: []string{profilesINI}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -122,6 +123,115 @@ Default=1
 	want := filepath.Join(root, "Profiles", "default-release")
 	if got != want {
 		t.Fatalf("parseProfile() = %q, want %q", got, want)
+	}
+}
+
+func TestLoaderLoadFiltersSQLiteAndSessionDomains(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "Profiles", "default-release")
+	if err := os.MkdirAll(filepath.Join(profileDir, "sessionstore-backups"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	profilesINI := filepath.Join(root, "profiles.ini")
+	if err := os.WriteFile(profilesINI, []byte(`
+[Profile0]
+Name=default-release
+IsRelative=1
+Path=Profiles/default-release
+Default=1
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(profiles.ini) error = %v", err)
+	}
+
+	cookieFile := filepath.Join(profileDir, "cookies.sqlite")
+	db, err := sql.Open("sqlite", cookieFile)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE TABLE moz_cookies (
+		host TEXT,
+		path TEXT,
+		isSecure INTEGER,
+		expiry INTEGER,
+		name TEXT,
+		value TEXT,
+		isHttpOnly INTEGER
+	)`); err != nil {
+		t.Fatalf("create moz_cookies error = %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO moz_cookies(host, path, isSecure, expiry, name, value, isHttpOnly) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		".sqlite.test", "/", 1, time.Now().Add(time.Hour).Unix(), "sqlite", "wanted", 1); err != nil {
+		t.Fatalf("insert moz_cookies wanted error = %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO moz_cookies(host, path, isSecure, expiry, name, value, isHttpOnly) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		".other.test", "/", 1, time.Now().Add(time.Hour).Unix(), "other", "ignored", 1); err != nil {
+		t.Fatalf("insert moz_cookies other error = %v", err)
+	}
+
+	sessionFile := filepath.Join(profileDir, "sessionstore-backups", "recovery.jsonlz4")
+	writeSessionLZ4(t, sessionFile, sessionStore{
+		Cookies: []sessionCookie{
+			{
+				Host:   ".sqlite.test",
+				Path:   "/",
+				Name:   "session",
+				Value:  "wanted-session",
+				Secure: true,
+			},
+			{
+				Host:   ".other.test",
+				Path:   "/",
+				Name:   "other-session",
+				Value:  "ignored",
+				Secure: true,
+			},
+		},
+	})
+
+	loader := NewLoader()
+	cookies, err := loader.Load(Browser{Name: "firefox", ProfilePatterns: []string{profilesINI}}, nil, []string{"SQLITE.test"})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cookies) != 2 {
+		t.Fatalf("len(cookies) = %d, want 2", len(cookies))
+	}
+	if findCookie(cookies, "other") != nil || findCookie(cookies, "other-session") != nil {
+		t.Fatalf("cookies = %#v, want filtered result", cookies)
+	}
+}
+
+func TestBrowserMetadataUsesFamilySpecificProfileRoots(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		spec string
+		want string
+	}{
+		{name: "firefox", spec: "firefox", want: "%APPDATA%/Mozilla/Firefox"},
+		{name: "librewolf", spec: "librewolf", want: "%LOCALAPPDATA%/librewolf"},
+		{name: "zen", spec: "zen", want: "%APPDATA%/zen"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns := browsercfg.MustMozilla(tt.spec).ProfilePatterns("windows")
+			found := false
+			for _, path := range patterns {
+				if path == tt.want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("ProfilePatterns() missing %q in %v", tt.want, patterns)
+			}
+		})
 	}
 }
 

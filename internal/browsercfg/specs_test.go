@@ -38,6 +38,24 @@ func TestChromiumSpecAliasOverridesDarwinSecrets(t *testing.T) {
 	}
 }
 
+func TestChromiumSpecExposesBackendMetadata(t *testing.T) {
+	t.Parallel()
+
+	edgeDev := MustChromium("edge-dev")
+	if len(edgeDev.LinuxLibsecretRefs("linux")) == 0 {
+		t.Fatal("LinuxLibsecretRefs(linux) is empty")
+	}
+	if len(edgeDev.LinuxKWalletRefs("linux")) == 0 {
+		t.Fatal("LinuxKWalletRefs(linux) is empty")
+	}
+	if len(edgeDev.LocalStatePaths("windows")) == 0 {
+		t.Fatal("LocalStatePaths(windows) is empty")
+	}
+	if len(edgeDev.WindowsKeySources("windows")) != 2 {
+		t.Fatalf("len(WindowsKeySources(windows)) = %d, want 2", len(edgeDev.WindowsKeySources("windows")))
+	}
+}
+
 func TestMozillaSpecUsesProfileRoots(t *testing.T) {
 	t.Parallel()
 

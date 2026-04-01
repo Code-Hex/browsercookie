@@ -39,3 +39,16 @@ func TestFilterByDomainsIgnoresParentDomainMismatch(t *testing.T) {
 		t.Fatalf("filtered cookie = %#v", filtered[0])
 	}
 }
+
+func TestSQLiteWhereBuildsExactAndSuffixPredicate(t *testing.T) {
+	t.Parallel()
+
+	query, args := SQLiteWhere(`SELECT host FROM moz_cookies`, "host", []string{"EXAMPLE.com"})
+	wantQuery := `SELECT host FROM moz_cookies WHERE (LOWER(LTRIM(host, '.')) = ? OR LOWER(LTRIM(host, '.')) LIKE ? ESCAPE '\')`
+	if query != wantQuery {
+		t.Fatalf("query = %q, want %q", query, wantQuery)
+	}
+	if len(args) != 2 || args[0] != "example.com" || args[1] != "%.example.com" {
+		t.Fatalf("args = %#v", args)
+	}
+}

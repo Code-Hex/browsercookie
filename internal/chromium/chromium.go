@@ -10,12 +10,27 @@ type secretRef struct {
 	Account string
 }
 
+type linuxLibsecretRef struct {
+	Schema      string
+	Application string
+}
+
+type linuxKWalletRef struct {
+	Folder string
+	Key    string
+}
+
+type windowsKeySource string
+
 // Browser describes a Chromium-based browser family.
 type Browser struct {
 	Name               string
 	CookieFilePatterns []string
 	Secrets            []secretRef
-	LinuxPasswordApps  []string
+	LinuxLibsecretRefs []linuxLibsecretRef
+	LinuxKWalletRefs   []linuxKWalletRef
+	LocalStatePaths    []string
+	WindowsKeySources  []windowsKeySource
 }
 
 // Loader reads Chromium cookie databases.
@@ -53,18 +68,44 @@ func browserFromSpec(spec browsercfg.ChromiumSpec) Browser {
 	browser := Browser{
 		Name:               spec.Name,
 		CookieFilePatterns: spec.CurrentCookiePatterns(),
-		LinuxPasswordApps:  spec.CurrentLinuxPasswordApps(),
+		LocalStatePaths:    spec.CurrentLocalStatePaths(),
 	}
 	secrets := spec.CurrentSecrets()
-	if len(secrets) == 0 {
-		return browser
+	if len(secrets) > 0 {
+		browser.Secrets = make([]secretRef, 0, len(secrets))
+		for _, secret := range secrets {
+			browser.Secrets = append(browser.Secrets, secretRef{
+				Service: secret.Service,
+				Account: secret.Account,
+			})
+		}
 	}
-	browser.Secrets = make([]secretRef, 0, len(secrets))
-	for _, secret := range secrets {
-		browser.Secrets = append(browser.Secrets, secretRef{
-			Service: secret.Service,
-			Account: secret.Account,
-		})
+	libsecretRefs := spec.CurrentLinuxLibsecretRefs()
+	if len(libsecretRefs) > 0 {
+		browser.LinuxLibsecretRefs = make([]linuxLibsecretRef, 0, len(libsecretRefs))
+		for _, ref := range libsecretRefs {
+			browser.LinuxLibsecretRefs = append(browser.LinuxLibsecretRefs, linuxLibsecretRef{
+				Schema:      ref.Schema,
+				Application: ref.Application,
+			})
+		}
+	}
+	kwalletRefs := spec.CurrentLinuxKWalletRefs()
+	if len(kwalletRefs) > 0 {
+		browser.LinuxKWalletRefs = make([]linuxKWalletRef, 0, len(kwalletRefs))
+		for _, ref := range kwalletRefs {
+			browser.LinuxKWalletRefs = append(browser.LinuxKWalletRefs, linuxKWalletRef{
+				Folder: ref.Folder,
+				Key:    ref.Key,
+			})
+		}
+	}
+	keySources := spec.CurrentWindowsKeySources()
+	if len(keySources) > 0 {
+		browser.WindowsKeySources = make([]windowsKeySource, 0, len(keySources))
+		for _, source := range keySources {
+			browser.WindowsKeySources = append(browser.WindowsKeySources, windowsKeySource(source))
+		}
 	}
 	return browser
 }

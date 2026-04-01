@@ -30,7 +30,7 @@ const (
 var chromiumIV = []byte("                ")
 
 // Load reads cookies from the configured Chromium browser store paths.
-func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error) {
+func (l Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cookie, error) {
 	if len(cookieFiles) == 0 {
 		cookieFiles = pathutil.Expand(browser.CookieFilePatterns)
 	}
@@ -44,11 +44,14 @@ func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, err
 
 	var cookies []*http.Cookie
 	for _, cookieFile := range cookieFiles {
-		loaded, err := loadCookieFileWithKeys(cookieFile, keys)
+		loaded, err := loadCookieFileWithKeys(cookieFile, keys, domains)
 		if err != nil {
 			return nil, err
 		}
 		cookies = append(cookies, loaded...)
+	}
+	if len(cookies) == 0 {
+		return nil, errdefs.ErrNotFound
 	}
 	cookieutil.SortByExpiry(cookies)
 	return cookies, nil
@@ -81,10 +84,10 @@ func (l Loader) keys(browser Browser) ([][]byte, error) {
 	return nil, errdefs.ErrDecrypt
 }
 
-func loadCookieFileWithKeys(path string, keys [][]byte) ([]*http.Cookie, error) {
+func loadCookieFileWithKeys(path string, keys [][]byte, domains []string) ([]*http.Cookie, error) {
 	var errs []error
 	for _, key := range keys {
-		cookies, err := loadCookieFile(path, key)
+		cookies, err := loadCookieFile(path, key, domains)
 		if err == nil {
 			return cookies, nil
 		}
@@ -100,7 +103,7 @@ func loadCookieFileWithKeys(path string, keys [][]byte) ([]*http.Cookie, error) 
 	return nil, errdefs.ErrDecrypt
 }
 
-func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
+func loadCookieFile(path string, key []byte, domains []string) ([]*http.Cookie, error) {
 	db, cleanup, err := sqlitecopy.Open(path)
 	if err != nil {
 		return nil, err
@@ -115,7 +118,8 @@ func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
 	if version < 10 {
 		query = `SELECT host_key, path, secure, expires_utc, name, value, encrypted_value FROM cookies`
 	}
-	rows, err := db.Query(query)
+	query, args := cookieutil.SQLiteWhere(query, "host_key", domains)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "no such column") {
 			return nil, errdefs.ErrInvalidStore

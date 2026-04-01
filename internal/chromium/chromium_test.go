@@ -72,7 +72,7 @@ func TestLoaderLoadReadsPlaintextAndEncryptedCookies(t *testing.T) {
 			secretFor(ChromeBrowser): password,
 		},
 	})
-	cookies, err := loader.Load(ChromeBrowser, []string{cookieFile})
+	cookies, err := loader.Load(ChromeBrowser, []string{cookieFile}, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -110,7 +110,7 @@ func TestLoaderLoadSupportsLegacySecureColumn(t *testing.T) {
 			secretFor(ChromeBrowser): password,
 		},
 	})
-	cookies, err := loader.Load(ChromeBrowser, []string{cookieFile})
+	cookies, err := loader.Load(ChromeBrowser, []string{cookieFile}, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -147,7 +147,7 @@ func TestLoaderLoadFallsBackToAlternateSecret(t *testing.T) {
 			{service: "Chrome Safe Storage", account: "Chrome"}:   rightPassword,
 		},
 	})
-	cookies, err := loader.Load(VivaldiBrowser, []string{cookieFile})
+	cookies, err := loader.Load(VivaldiBrowser, []string{cookieFile}, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -225,12 +225,56 @@ func TestLoaderLoadReturnsSecretErrorsWhenAllCandidatesFail(t *testing.T) {
 			secretFor(ChromeBrowser): errors.New("missing keychain item"),
 		},
 	})
-	_, err := loader.Load(ChromeBrowser, []string{filepath.Join(t.TempDir(), "Cookies")})
+	_, err := loader.Load(ChromeBrowser, []string{filepath.Join(t.TempDir(), "Cookies")}, nil)
 	if err == nil {
 		t.Fatal("Load() error = nil, want failure")
 	}
 	if !errors.Is(err, errdefs.ErrDecrypt) && !strings.Contains(err.Error(), "missing keychain item") {
 		t.Fatalf("Load() error = %v, want secret lookup failure", err)
+	}
+}
+
+func TestLoaderLoadFiltersDomainsAtQueryLevel(t *testing.T) {
+	t.Parallel()
+
+	password := []byte("secret-for-tests")
+	key := pbkdf2.Key(password, []byte(chromiumSalt), chromiumIterations, chromiumKeyLength, sha1.New)
+	cookieFile := filepath.Join(t.TempDir(), "Cookies")
+	expires := time.Unix(1_700_000_000, 0).UTC()
+
+	writeChromiumDB(t, cookieFile, 24, false, []chromiumRow{
+		{
+			host:    ".example.com",
+			path:    "/",
+			secure:  1,
+			expires: chromiumExpires(expires),
+			name:    "wanted",
+			enc:     encryptValue(t, "match", key, true),
+		},
+		{
+			host:    ".example.org",
+			path:    "/",
+			secure:  1,
+			expires: chromiumExpires(expires),
+			name:    "other",
+			enc:     encryptValue(t, "ignore", key, true),
+		},
+	})
+
+	loader := NewLoader(fakeProvider{
+		passwords: map[secretKey][]byte{
+			secretFor(ChromeBrowser): password,
+		},
+	})
+	cookies, err := loader.Load(ChromeBrowser, []string{cookieFile}, []string{"EXAMPLE.com"})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cookies) != 1 {
+		t.Fatalf("len(cookies) = %d, want 1", len(cookies))
+	}
+	if cookies[0].Name != "wanted" {
+		t.Fatalf("cookie = %#v", cookies[0])
 	}
 }
 

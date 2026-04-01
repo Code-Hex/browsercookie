@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/Code-Hex/browsercookie/internal/errdefs"
 	"github.com/Code-Hex/browsercookie/internal/pathutil"
 	"github.com/Code-Hex/browsercookie/internal/sqlitecopy"
+	"github.com/godbus/dbus/v5"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -27,12 +27,49 @@ const (
 	chromiumIterations      = 1
 	chromiumKeyLength       = 16
 	unixToNTEpochOffsetMicr = int64(11644473600 * 1_000_000)
+	linuxDBusAppID          = "browsercookie"
 )
 
-var chromiumIV = []byte("                ")
+var (
+	chromiumIV = []byte("                ")
+
+	newLinuxKeyringClient = func() (linuxKeyringClient, error) {
+		conn, err := dbus.SessionBus()
+		if err != nil {
+			return nil, err
+		}
+		return &linuxDBusClient{conn: conn}, nil
+	}
+)
+
+type linuxKeyringClient interface {
+	SecretPassword(schema, application string) ([]byte, error)
+	KWalletPassword(folder, key string) ([]byte, error)
+}
+
+type linuxDBusClient struct {
+	conn *dbus.Conn
+}
+
+type secretServiceSecret struct {
+	Session     dbus.ObjectPath
+	Parameters  []byte
+	Value       []byte
+	ContentType string
+}
+
+type kwalletEndpoint struct {
+	service string
+	path    dbus.ObjectPath
+}
+
+var kwalletEndpoints = []kwalletEndpoint{
+	{service: "org.kde.kwalletd6", path: "/modules/kwalletd6"},
+	{service: "org.kde.kwalletd5", path: "/modules/kwalletd5"},
+}
 
 // Load reads cookies from the configured Chromium browser store paths.
-func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, error) {
+func (l Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Cookie, error) {
 	if len(cookieFiles) == 0 {
 		cookieFiles = pathutil.Expand(browser.CookieFilePatterns)
 	}
@@ -43,11 +80,14 @@ func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, err
 
 	var cookies []*http.Cookie
 	for _, cookieFile := range cookieFiles {
-		loaded, err := loadCookieFileWithKeys(cookieFile, keys)
+		loaded, err := loadCookieFileWithKeys(cookieFile, keys, domains)
 		if err != nil {
 			return nil, err
 		}
 		cookies = append(cookies, loaded...)
+	}
+	if len(cookies) == 0 {
+		return nil, errdefs.ErrNotFound
 	}
 	cookieutil.SortByExpiry(cookies)
 	return cookies, nil
@@ -56,7 +96,7 @@ func (l Loader) Load(browser Browser, cookieFiles []string) ([]*http.Cookie, err
 func linuxKeys(browser Browser) [][]byte {
 	keys := make([][]byte, 0, 4)
 	seen := map[string]struct{}{}
-	for _, password := range linuxPasswords(browser.LinuxPasswordApps) {
+	for _, password := range linuxPasswords(browser) {
 		addPBKDF2Key(&keys, seen, password)
 	}
 	addPBKDF2Key(&keys, seen, []byte("peanuts"))
@@ -74,61 +114,122 @@ func addPBKDF2Key(keys *[][]byte, seen map[string]struct{}, password []byte) {
 	*keys = append(*keys, key)
 }
 
-func linuxPasswords(apps []string) [][]byte {
-	passwords := make([][]byte, 0, len(apps)*3)
+func linuxPasswords(browser Browser) [][]byte {
+	client, err := newLinuxKeyringClient()
+	if err != nil {
+		return nil
+	}
+
+	passwords := make([][]byte, 0, len(browser.LinuxLibsecretRefs)+len(browser.LinuxKWalletRefs))
 	seen := map[string]struct{}{}
-	for _, app := range apps {
-		for _, password := range [][]byte{
-			lookupSecretToolPassword("chrome_libsecret_os_crypt_password_v2", app),
-			lookupSecretToolPassword("chrome_libsecret_os_crypt_password_v1", app),
-			lookupKWalletPassword(app),
-		} {
-			if len(password) == 0 {
-				continue
-			}
-			fingerprint := string(password)
-			if _, ok := seen[fingerprint]; ok {
-				continue
-			}
-			seen[fingerprint] = struct{}{}
-			passwords = append(passwords, password)
+	for _, ref := range browser.LinuxLibsecretRefs {
+		password, err := client.SecretPassword(ref.Schema, ref.Application)
+		if err != nil || len(password) == 0 {
+			continue
 		}
+		fingerprint := string(password)
+		if _, ok := seen[fingerprint]; ok {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		passwords = append(passwords, append([]byte(nil), password...))
+	}
+	for _, ref := range browser.LinuxKWalletRefs {
+		password, err := client.KWalletPassword(ref.Folder, ref.Key)
+		if err != nil || len(password) == 0 {
+			continue
+		}
+		fingerprint := string(password)
+		if _, ok := seen[fingerprint]; ok {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		passwords = append(passwords, append([]byte(nil), password...))
 	}
 	return passwords
 }
 
-func lookupSecretToolPassword(schema, app string) []byte {
-	cmd := exec.Command("secret-tool", "lookup", "xdg:schema", schema, "application", app)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
+func (c *linuxDBusClient) SecretPassword(schema, application string) ([]byte, error) {
+	attrs := map[string]string{
+		"xdg:schema":  schema,
+		"application": application,
 	}
-	return bytes.TrimSpace(out)
+
+	service := c.conn.Object("org.freedesktop.secrets", "/org/freedesktop/secrets")
+	var unlocked []dbus.ObjectPath
+	var locked []dbus.ObjectPath
+	if err := service.Call("org.freedesktop.Secret.Service.SearchItems", 0, attrs).Store(&unlocked, &locked); err != nil {
+		return nil, err
+	}
+
+	item := firstObjectPath(unlocked)
+	if item == "" {
+		var prompt dbus.ObjectPath
+		if err := service.Call("org.freedesktop.Secret.Service.Unlock", 0, locked).Store(&unlocked, &prompt); err != nil {
+			return nil, err
+		}
+		item = firstObjectPath(unlocked)
+	}
+	if item == "" {
+		return nil, errors.New("secret item not found")
+	}
+
+	var output dbus.Variant
+	var session dbus.ObjectPath
+	if err := service.Call("org.freedesktop.Secret.Service.OpenSession", 0, "plain", dbus.MakeVariant("")).Store(&output, &session); err != nil {
+		return nil, err
+	}
+
+	var secrets map[dbus.ObjectPath]secretServiceSecret
+	if err := service.Call("org.freedesktop.Secret.Service.GetSecrets", 0, []dbus.ObjectPath{item}, session).Store(&secrets); err != nil {
+		return nil, err
+	}
+	secret, ok := secrets[item]
+	if !ok {
+		return nil, errors.New("secret payload not found")
+	}
+	return bytes.TrimSpace(secret.Value), nil
 }
 
-func lookupKWalletPassword(app string) []byte {
-	folder := linuxCapitalize(app) + " Keys"
-	key := linuxCapitalize(app) + " Safe Storage"
+func (c *linuxDBusClient) KWalletPassword(folder, key string) ([]byte, error) {
+	for _, endpoint := range kwalletEndpoints {
+		obj := c.conn.Object(endpoint.service, endpoint.path)
 
-	cmd := exec.Command("kwallet-query", "-f", folder, "-r", key, "kdewallet")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
+		var wallet string
+		if err := obj.Call("org.kde.KWallet.networkWallet", 0).Store(&wallet); err != nil {
+			continue
+		}
+
+		var handle int32
+		if err := obj.Call("org.kde.KWallet.open", 0, wallet, int64(0), linuxDBusAppID).Store(&handle); err != nil {
+			continue
+		}
+		if handle < 0 {
+			continue
+		}
+
+		var password string
+		if err := obj.Call("org.kde.KWallet.readPassword", 0, handle, folder, key, linuxDBusAppID).Store(&password); err != nil {
+			_ = obj.Call("org.kde.KWallet.close", 0, wallet, false)
+			continue
+		}
+		_ = obj.Call("org.kde.KWallet.close", 0, wallet, false)
+		return bytes.TrimSpace([]byte(password)), nil
 	}
-	return bytes.TrimSpace(out)
+	return nil, errors.New("kwallet password not found")
 }
 
-func linuxCapitalize(value string) string {
-	if value == "" {
+func firstObjectPath(paths []dbus.ObjectPath) dbus.ObjectPath {
+	if len(paths) == 0 {
 		return ""
 	}
-	return strings.ToUpper(value[:1]) + value[1:]
+	return paths[0]
 }
 
-func loadCookieFileWithKeys(path string, keys [][]byte) ([]*http.Cookie, error) {
+func loadCookieFileWithKeys(path string, keys [][]byte, domains []string) ([]*http.Cookie, error) {
 	var errs []error
 	for _, key := range keys {
-		cookies, err := loadCookieFile(path, key)
+		cookies, err := loadCookieFile(path, key, domains)
 		if err == nil {
 			return cookies, nil
 		}
@@ -144,7 +245,7 @@ func loadCookieFileWithKeys(path string, keys [][]byte) ([]*http.Cookie, error) 
 	return nil, errdefs.ErrDecrypt
 }
 
-func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
+func loadCookieFile(path string, key []byte, domains []string) ([]*http.Cookie, error) {
 	db, cleanup, err := sqlitecopy.Open(path)
 	if err != nil {
 		return nil, err
@@ -159,7 +260,8 @@ func loadCookieFile(path string, key []byte) ([]*http.Cookie, error) {
 	if version < 10 {
 		query = `SELECT host_key, path, secure, expires_utc, name, value, encrypted_value FROM cookies`
 	}
-	rows, err := db.Query(query)
+	query, args := cookieutil.SQLiteWhere(query, "host_key", domains)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "no such column") {
 			return nil, errdefs.ErrInvalidStore

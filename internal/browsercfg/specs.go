@@ -12,12 +12,37 @@ type Secret struct {
 	Account string
 }
 
+// LinuxLibsecretRef identifies one libsecret lookup target.
+type LinuxLibsecretRef struct {
+	Schema      string
+	Application string
+}
+
+// LinuxKWalletRef identifies one KWallet lookup target.
+type LinuxKWalletRef struct {
+	Folder string
+	Key    string
+}
+
+// WindowsKeySource identifies which Local State key entry can decrypt cookies.
+type WindowsKeySource string
+
+const (
+	// WindowsEncryptedKey is the classic DPAPI-protected key.
+	WindowsEncryptedKey WindowsKeySource = "encrypted_key"
+	// WindowsAppBoundEncryptedKey is the app-bound elevation-service key.
+	WindowsAppBoundEncryptedKey WindowsKeySource = "app_bound_encrypted_key"
+)
+
 // ChromiumPlatform defines Chromium-family paths and secrets for one OS.
 type ChromiumPlatform struct {
 	CookiePathTemplates []string
 	Channels            []string
 	Secrets             []Secret
-	LinuxPasswordApps   []string
+	LinuxLibsecretRefs  []LinuxLibsecretRef
+	LinuxKWalletRefs    []LinuxKWalletRef
+	LocalStatePaths     []string
+	WindowsKeySources   []WindowsKeySource
 }
 
 // ChromiumSpec describes one Chromium-family browser across supported OSes.
@@ -104,18 +129,60 @@ func (s ChromiumSpec) CurrentSecrets() []Secret {
 	return s.Secrets(runtime.GOOS)
 }
 
-// LinuxPasswordApps returns Linux secret-store application names for the OS.
-func (s ChromiumSpec) LinuxPasswordApps(goos string) []string {
+// LinuxLibsecretRefs returns Linux libsecret lookups for the requested OS.
+func (s ChromiumSpec) LinuxLibsecretRefs(goos string) []LinuxLibsecretRef {
 	platform, ok := s.Platforms[goos]
 	if !ok {
 		return nil
 	}
-	return append([]string(nil), platform.LinuxPasswordApps...)
+	return append([]LinuxLibsecretRef(nil), platform.LinuxLibsecretRefs...)
 }
 
-// CurrentLinuxPasswordApps returns Linux secret-store application names for the current OS.
-func (s ChromiumSpec) CurrentLinuxPasswordApps() []string {
-	return s.LinuxPasswordApps(runtime.GOOS)
+// CurrentLinuxLibsecretRefs returns Linux libsecret lookups for the current OS.
+func (s ChromiumSpec) CurrentLinuxLibsecretRefs() []LinuxLibsecretRef {
+	return s.LinuxLibsecretRefs(runtime.GOOS)
+}
+
+// LinuxKWalletRefs returns Linux KWallet lookups for the requested OS.
+func (s ChromiumSpec) LinuxKWalletRefs(goos string) []LinuxKWalletRef {
+	platform, ok := s.Platforms[goos]
+	if !ok {
+		return nil
+	}
+	return append([]LinuxKWalletRef(nil), platform.LinuxKWalletRefs...)
+}
+
+// CurrentLinuxKWalletRefs returns Linux KWallet lookups for the current OS.
+func (s ChromiumSpec) CurrentLinuxKWalletRefs() []LinuxKWalletRef {
+	return s.LinuxKWalletRefs(runtime.GOOS)
+}
+
+// LocalStatePaths returns Local State resolution hints for the requested OS.
+func (s ChromiumSpec) LocalStatePaths(goos string) []string {
+	platform, ok := s.Platforms[goos]
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), platform.LocalStatePaths...)
+}
+
+// CurrentLocalStatePaths returns Local State resolution hints for the current OS.
+func (s ChromiumSpec) CurrentLocalStatePaths() []string {
+	return s.LocalStatePaths(runtime.GOOS)
+}
+
+// WindowsKeySources returns allowed Local State key sources for the requested OS.
+func (s ChromiumSpec) WindowsKeySources(goos string) []WindowsKeySource {
+	platform, ok := s.Platforms[goos]
+	if !ok {
+		return nil
+	}
+	return append([]WindowsKeySource(nil), platform.WindowsKeySources...)
+}
+
+// CurrentWindowsKeySources returns allowed Local State key sources for the current OS.
+func (s ChromiumSpec) CurrentWindowsKeySources() []WindowsKeySource {
+	return s.WindowsKeySources(runtime.GOOS)
 }
 
 // ProfilePatterns returns the expanded Firefox profile roots for the requested OS.
@@ -181,6 +248,21 @@ func replaceChannel(template, channel string) string {
 	return strings.ReplaceAll(template, "{channel}", channel)
 }
 
+func defaultLocalStatePaths() []string {
+	return []string{
+		"../../Local State",
+		"../Local State",
+		"Local State",
+	}
+}
+
+func defaultWindowsKeySources() []WindowsKeySource {
+	return []WindowsKeySource{
+		WindowsEncryptedKey,
+		WindowsAppBoundEncryptedKey,
+	}
+}
+
 var chromiumSpecs = func() map[string]ChromiumSpec {
 	specs := map[string]ChromiumSpec{
 		"chrome": {
@@ -203,8 +285,14 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/com.google.Chrome/config/google-chrome{channel}/Default/Cookies",
 						"~/.var/app/com.google.Chrome/config/google-chrome{channel}/Profile */Cookies",
 					},
-					Channels:          []string{"", "-beta", "-dev", "-nightly"},
-					LinuxPasswordApps: []string{"chrome"},
+					Channels: []string{"", "-beta", "-dev", "-nightly"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chrome"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chrome"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Chrome Keys", Key: "Chrome Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -217,7 +305,9 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/Google/Chrome{channel}/User Data/Profile */Cookies",
 						"%APPDATA%/Google/Chrome{channel}/User Data/Profile */Network/Cookies",
 					},
-					Channels: []string{"", "-beta", "-dev", "-nightly"},
+					Channels:          []string{"", "-beta", "-dev", "-nightly"},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -242,8 +332,14 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser{channel}/Default/Cookies",
 						"~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser{channel}/Profile */Cookies",
 					},
-					Channels:          []string{"", "-beta", "-dev", "-nightly"},
-					LinuxPasswordApps: []string{"brave"},
+					Channels: []string{"", "-beta", "-dev", "-nightly"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "brave"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "brave"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Brave Keys", Key: "Brave Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -256,7 +352,9 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/BraveSoftware/Brave-Browser{channel}/User Data/Profile */Cookies",
 						"%APPDATA%/BraveSoftware/Brave-Browser{channel}/User Data/Profile */Network/Cookies",
 					},
-					Channels: []string{"", "-beta", "-dev", "-nightly"},
+					Channels:          []string{"", "-beta", "-dev", "-nightly"},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -281,7 +379,13 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/org.chromium.Chromium/config/chromium/Default/Cookies",
 						"~/.var/app/org.chromium.Chromium/config/chromium/Profile */Cookies",
 					},
-					LinuxPasswordApps: []string{"chromium"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chromium"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chromium"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Chromium Keys", Key: "Chromium Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -294,6 +398,8 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/Chromium/User Data/Profile */Cookies",
 						"%APPDATA%/Chromium/User Data/Profile */Network/Cookies",
 					},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -319,7 +425,13 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/com.vivaldi.Vivaldi/config/vivaldi/Default/Cookies",
 						"~/.var/app/com.vivaldi.Vivaldi/config/vivaldi/Profile */Cookies",
 					},
-					LinuxPasswordApps: []string{"chrome"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chrome"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chrome"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Chrome Keys", Key: "Chrome Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -332,6 +444,8 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/Vivaldi/User Data/Profile */Cookies",
 						"%APPDATA%/Vivaldi/User Data/Profile */Network/Cookies",
 					},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -355,8 +469,14 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/com.microsoft.Edge/config/microsoft-edge{channel}/Default/Cookies",
 						"~/.var/app/com.microsoft.Edge/config/microsoft-edge{channel}/Profile */Cookies",
 					},
-					Channels:          []string{"", "-beta", "-dev", "-nightly"},
-					LinuxPasswordApps: []string{"chromium"},
+					Channels: []string{"", "-beta", "-dev", "-nightly"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chromium"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chromium"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Chromium Keys", Key: "Chromium Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -369,7 +489,9 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/Microsoft/Edge{channel}/User Data/Profile */Cookies",
 						"%APPDATA%/Microsoft/Edge{channel}/User Data/Profile */Network/Cookies",
 					},
-					Channels: []string{"", "-beta", "-dev", "-nightly"},
+					Channels:          []string{"", "-beta", "-dev", "-nightly"},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -407,7 +529,13 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/com.opera.Opera/config/opera-developer/Default/Cookies",
 						"~/.var/app/com.opera.Opera/config/opera-developer/Cookies",
 					},
-					LinuxPasswordApps: []string{"chromium"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chromium"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chromium"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Chromium Keys", Key: "Chromium Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -416,7 +544,9 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/Opera Software/Opera {channel}/Cookies",
 						"%APPDATA%/Opera Software/Opera {channel}/Network/Cookies",
 					},
-					Channels: []string{"Stable", "Next", "Developer"},
+					Channels:          []string{"Stable", "Next", "Developer"},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -433,7 +563,13 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 				},
 				"linux": {
 					CookiePathTemplates: nil,
-					LinuxPasswordApps:   []string{"chromium"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chromium"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chromium"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Chromium Keys", Key: "Chromium Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
@@ -442,7 +578,9 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"%APPDATA%/Opera Software/Opera GX {channel}/Cookies",
 						"%APPDATA%/Opera Software/Opera GX {channel}/Network/Cookies",
 					},
-					Channels: []string{"Stable", ""},
+					Channels:          []string{"Stable", ""},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -466,13 +604,21 @@ var chromiumSpecs = func() map[string]ChromiumSpec {
 						"~/.var/app/org.arc.Arc/config/arc/Default/Cookies",
 						"~/.var/app/org.arc.Arc/config/arc/Profile */Cookies",
 					},
-					LinuxPasswordApps: []string{"arc"},
+					LinuxLibsecretRefs: []LinuxLibsecretRef{
+						{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "arc"},
+						{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "arc"},
+					},
+					LinuxKWalletRefs: []LinuxKWalletRef{
+						{Folder: "Arc Keys", Key: "Arc Safe Storage"},
+					},
 				},
 				"windows": {
 					CookiePathTemplates: []string{
 						"%LOCALAPPDATA%/Packages/TheBrowserCompany.Arc*/LocalCache/Local/Arc/User Data/Default/Network/Cookies",
 						"%LOCALAPPDATA%/Packages/TheBrowserCompany.Arc*/LocalCache/Local/Arc/User Data/Profile */Network/Cookies",
 					},
+					LocalStatePaths:   defaultLocalStatePaths(),
+					WindowsKeySources: defaultWindowsKeySources(),
 				},
 			},
 		},
@@ -575,7 +721,10 @@ func aliasChromiumChannel(base ChromiumSpec, name string, channels map[string][]
 			CookiePathTemplates: append([]string(nil), platform.CookiePathTemplates...),
 			Channels:            append([]string(nil), platform.Channels...),
 			Secrets:             append([]Secret(nil), platform.Secrets...),
-			LinuxPasswordApps:   append([]string(nil), platform.LinuxPasswordApps...),
+			LinuxLibsecretRefs:  append([]LinuxLibsecretRef(nil), platform.LinuxLibsecretRefs...),
+			LinuxKWalletRefs:    append([]LinuxKWalletRef(nil), platform.LinuxKWalletRefs...),
+			LocalStatePaths:     append([]string(nil), platform.LocalStatePaths...),
+			WindowsKeySources:   append([]WindowsKeySource(nil), platform.WindowsKeySources...),
 		}
 		if override, ok := channels[goos]; ok {
 			copied.Channels = append([]string(nil), override...)
