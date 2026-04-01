@@ -437,10 +437,27 @@ func (s *webDriverSession) Close(t *testing.T) {
 		s.sessionID = ""
 	}
 	s.cancel()
-	if err := s.cmd.Wait(); err != nil && !errors.Is(err, context.Canceled) {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("%s wait error = %v\n%s", s.driverName, err, s.Output())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("%s wait error = %v\n%s", s.driverName, err, s.Output())
+			}
+		}
+	case <-time.After(5 * time.Second):
+		_ = s.cmd.Process.Kill()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("%s kill error = %v\n%s", s.driverName, err, s.Output())
+			}
 		}
 	}
 }
