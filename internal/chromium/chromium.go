@@ -1,6 +1,9 @@
 package chromium
 
-import "github.com/Code-Hex/browsercookie/internal/secrets"
+import (
+	"github.com/Code-Hex/browsercookie/internal/browsercfg"
+	"github.com/Code-Hex/browsercookie/internal/secrets"
+)
 
 type secretRef struct {
 	Service string
@@ -12,6 +15,7 @@ type Browser struct {
 	Name               string
 	CookieFilePatterns []string
 	Secrets            []secretRef
+	LinuxPasswordApps  []string
 }
 
 // Loader reads Chromium cookie databases.
@@ -26,72 +30,41 @@ func NewLoader(secretProvider secrets.Provider) Loader {
 
 var (
 	// ChromeBrowser describes Google Chrome.
-	ChromeBrowser = Browser{
-		Name: "chrome",
-		CookieFilePatterns: []string{
-			"~/Library/Application Support/Google/Chrome/Default/Cookies",
-			"~/Library/Application Support/Google/Chrome/Profile */Cookies",
-		},
-		Secrets: []secretRef{
-			{Service: "Chrome Safe Storage", Account: "Chrome"},
-		},
-	}
+	ChromeBrowser = browserFromSpec(browsercfg.MustChromium("chrome"))
 	// BraveBrowser describes Brave.
-	BraveBrowser = Browser{
-		Name: "brave",
-		CookieFilePatterns: []string{
-			"~/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies",
-			"~/Library/Application Support/BraveSoftware/Brave-Browser/Profile */Cookies",
-		},
-		Secrets: []secretRef{
-			{Service: "Brave Safe Storage", Account: "Brave"},
-		},
-	}
+	BraveBrowser = browserFromSpec(browsercfg.MustChromium("brave"))
 	// ChromiumBrowser describes Chromium.
-	ChromiumBrowser = Browser{
-		Name: "chromium",
-		CookieFilePatterns: []string{
-			"~/Library/Application Support/Chromium/Default/Cookies",
-			"~/Library/Application Support/Chromium/Profile */Cookies",
-		},
-		Secrets: []secretRef{
-			{Service: "Chromium Safe Storage", Account: "Chromium"},
-			{Service: "Chrome Safe Storage", Account: "Chrome"},
-		},
-	}
+	ChromiumBrowser = browserFromSpec(browsercfg.MustChromium("chromium"))
 	// VivaldiBrowser describes Vivaldi.
-	VivaldiBrowser = Browser{
-		Name: "vivaldi",
-		CookieFilePatterns: []string{
-			"~/Library/Application Support/Vivaldi/Default/Cookies",
-			"~/Library/Application Support/Vivaldi/Profile */Cookies",
-		},
-		Secrets: []secretRef{
-			{Service: "Vivaldi Safe Storage", Account: "Vivaldi"},
-			{Service: "Chrome Safe Storage", Account: "Chrome"},
-		},
-	}
+	VivaldiBrowser = browserFromSpec(browsercfg.MustChromium("vivaldi"))
 	// EdgeBrowser describes Microsoft Edge.
-	EdgeBrowser = Browser{
-		Name: "edge",
-		CookieFilePatterns: []string{
-			"~/Library/Application Support/Microsoft/Edge/Default/Cookies",
-			"~/Library/Application Support/Microsoft/Edge/Profile */Cookies",
-		},
-		Secrets: []secretRef{
-			{Service: "Microsoft Edge Safe Storage", Account: "Microsoft Edge"},
-		},
-	}
+	EdgeBrowser = browserFromSpec(browsercfg.MustChromium("edge"))
 	// EdgeDevBrowser describes Microsoft Edge Dev.
-	EdgeDevBrowser = Browser{
-		Name: "edge-dev",
-		CookieFilePatterns: []string{
-			"~/Library/Application Support/Microsoft/Edge Dev/Default/Cookies",
-			"~/Library/Application Support/Microsoft/Edge Dev/Profile */Cookies",
-		},
-		Secrets: []secretRef{
-			{Service: "Microsoft Edge Dev Safe Storage", Account: "Microsoft Edge Dev"},
-			{Service: "Microsoft Edge Safe Storage", Account: "Microsoft Edge"},
-		},
-	}
+	EdgeDevBrowser = browserFromSpec(browsercfg.MustChromium("edge-dev"))
+	// OperaBrowser describes Opera.
+	OperaBrowser = browserFromSpec(browsercfg.MustChromium("opera"))
+	// OperaGXBrowser describes Opera GX.
+	OperaGXBrowser = browserFromSpec(browsercfg.MustChromium("opera-gx"))
+	// ArcBrowser describes Arc.
+	ArcBrowser = browserFromSpec(browsercfg.MustChromium("arc"))
 )
+
+func browserFromSpec(spec browsercfg.ChromiumSpec) Browser {
+	browser := Browser{
+		Name:               spec.Name,
+		CookieFilePatterns: spec.CurrentCookiePatterns(),
+		LinuxPasswordApps:  spec.CurrentLinuxPasswordApps(),
+	}
+	secrets := spec.CurrentSecrets()
+	if len(secrets) == 0 {
+		return browser
+	}
+	browser.Secrets = make([]secretRef, 0, len(secrets))
+	for _, secret := range secrets {
+		browser.Secrets = append(browser.Secrets, secretRef{
+			Service: secret.Service,
+			Account: secret.Account,
+		})
+	}
+	return browser
+}

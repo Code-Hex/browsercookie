@@ -26,7 +26,12 @@ var loadOrder = []browserLoadCall{
 	{name: chromiumloader.VivaldiBrowser.Name, load: loadVivaldi},
 	{name: chromiumloader.EdgeBrowser.Name, load: loadEdge},
 	{name: chromiumloader.EdgeDevBrowser.Name, load: loadEdgeDev},
+	{name: chromiumloader.ArcBrowser.Name, load: loadArc},
+	{name: chromiumloader.OperaBrowser.Name, load: loadOpera},
+	{name: chromiumloader.OperaGXBrowser.Name, load: loadOperaGX},
 	{name: firefox.FirefoxBrowser.Name, load: loadFirefox},
+	{name: firefox.LibreWolfBrowser.Name, load: loadLibreWolf},
+	{name: firefox.ZenBrowser.Name, load: loadZen},
 	{name: safari.SafariBrowser.Name, load: loadSafari},
 }
 
@@ -60,9 +65,34 @@ func EdgeDev(opts ...Option) ([]*http.Cookie, error) {
 	return loadEdgeDev(collectOptions(opts...))
 }
 
+// Arc loads cookies from Arc.
+func Arc(opts ...Option) ([]*http.Cookie, error) {
+	return loadArc(collectOptions(opts...))
+}
+
+// Opera loads cookies from Opera.
+func Opera(opts ...Option) ([]*http.Cookie, error) {
+	return loadOpera(collectOptions(opts...))
+}
+
+// OperaGX loads cookies from Opera GX.
+func OperaGX(opts ...Option) ([]*http.Cookie, error) {
+	return loadOperaGX(collectOptions(opts...))
+}
+
 // Firefox loads cookies from Firefox.
 func Firefox(opts ...Option) ([]*http.Cookie, error) {
 	return loadFirefox(collectOptions(opts...))
+}
+
+// LibreWolf loads cookies from LibreWolf.
+func LibreWolf(opts ...Option) ([]*http.Cookie, error) {
+	return loadLibreWolf(collectOptions(opts...))
+}
+
+// Zen loads cookies from Zen.
+func Zen(opts ...Option) ([]*http.Cookie, error) {
+	return loadZen(collectOptions(opts...))
 }
 
 // Safari loads cookies from Safari.
@@ -134,13 +164,43 @@ func loadEdgeDev(cfg options) ([]*http.Cookie, error) {
 	return loadChromiumBrowser(chromiumloader.EdgeDevBrowser, cfg)
 }
 
+func loadArc(cfg options) ([]*http.Cookie, error) {
+	return loadChromiumBrowser(chromiumloader.ArcBrowser, cfg)
+}
+
+func loadOpera(cfg options) ([]*http.Cookie, error) {
+	return loadChromiumBrowser(chromiumloader.OperaBrowser, cfg)
+}
+
+func loadOperaGX(cfg options) ([]*http.Cookie, error) {
+	return loadChromiumBrowser(chromiumloader.OperaGXBrowser, cfg)
+}
+
 func loadFirefox(cfg options) ([]*http.Cookie, error) {
 	loader := firefox.NewLoader()
 	cookies, err := loader.Load(firefox.FirefoxBrowser, cfg.cookieFilesCopy())
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", firefox.FirefoxBrowser.Name, err)
 	}
-	return cookies, nil
+	return filterCookies(cookies, cfg.domainsCopy())
+}
+
+func loadLibreWolf(cfg options) ([]*http.Cookie, error) {
+	loader := firefox.NewLoader()
+	cookies, err := loader.Load(firefox.LibreWolfBrowser, cfg.cookieFilesCopy())
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", firefox.LibreWolfBrowser.Name, err)
+	}
+	return filterCookies(cookies, cfg.domainsCopy())
+}
+
+func loadZen(cfg options) ([]*http.Cookie, error) {
+	loader := firefox.NewLoader()
+	cookies, err := loader.Load(firefox.ZenBrowser, cfg.cookieFilesCopy())
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", firefox.ZenBrowser.Name, err)
+	}
+	return filterCookies(cookies, cfg.domainsCopy())
 }
 
 func loadSafari(cfg options) ([]*http.Cookie, error) {
@@ -149,7 +209,7 @@ func loadSafari(cfg options) ([]*http.Cookie, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", safari.SafariBrowser.Name, err)
 	}
-	return cookies, nil
+	return filterCookies(cookies, cfg.domainsCopy())
 }
 
 func loadChromiumBrowser(browser chromiumloader.Browser, cfg options) ([]*http.Cookie, error) {
@@ -158,5 +218,13 @@ func loadChromiumBrowser(browser chromiumloader.Browser, cfg options) ([]*http.C
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", browser.Name, err)
 	}
-	return cookies, nil
+	return filterCookies(cookies, cfg.domainsCopy())
+}
+
+func filterCookies(cookies []*http.Cookie, domains []string) ([]*http.Cookie, error) {
+	filtered := cookieutil.FilterByDomains(cookies, domains)
+	if len(filtered) == 0 {
+		return nil, ErrNotFound
+	}
+	return filtered, nil
 }

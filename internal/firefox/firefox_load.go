@@ -1,5 +1,3 @@
-//go:build darwin
-
 package firefox
 
 import (
@@ -56,6 +54,11 @@ type iniSection struct {
 }
 
 func parseProfile(profile string) (string, error) {
+	profile, err := resolveProfilesINI(profile)
+	if err != nil {
+		return "", err
+	}
+
 	file, err := os.Open(profile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -100,6 +103,20 @@ func parseProfile(profile string) (string, error) {
 		return "", errdefs.ErrNotFound
 	}
 	return expandProfilePath("", selected), nil
+}
+
+func resolveProfilesINI(profile string) (string, error) {
+	info, err := os.Stat(profile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", errdefs.ErrNotFound
+		}
+		return "", err
+	}
+	if info.IsDir() {
+		return filepath.Join(profile, "profiles.ini"), nil
+	}
+	return profile, nil
 }
 
 func parseINI(file *os.File) ([]iniSection, error) {

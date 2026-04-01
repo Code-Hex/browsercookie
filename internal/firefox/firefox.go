@@ -1,5 +1,7 @@
 package firefox
 
+import "github.com/Code-Hex/browsercookie/internal/browsercfg"
+
 // Browser describes a Firefox-family browser.
 type Browser struct {
 	Name            string
@@ -14,10 +16,18 @@ func NewLoader() Loader {
 	return Loader{}
 }
 
-// FirefoxBrowser describes Firefox.
-var FirefoxBrowser = Browser{
-	Name: "firefox",
-	ProfilePatterns: []string{
-		"~/Library/Application Support/Firefox/profiles.ini",
-	},
+var (
+	// FirefoxBrowser describes Firefox.
+	FirefoxBrowser = browserFromSpec(browsercfg.MustMozilla("firefox"))
+	// LibreWolfBrowser describes LibreWolf.
+	LibreWolfBrowser = browserFromSpec(browsercfg.MustMozilla("librewolf"))
+	// ZenBrowser describes Zen.
+	ZenBrowser = browserFromSpec(browsercfg.MustMozilla("zen"))
+)
+
+func browserFromSpec(spec browsercfg.MozillaSpec) Browser {
+	return Browser{
+		Name:            spec.Name,
+		ProfilePatterns: spec.CurrentProfilePatterns(),
+	}
 }

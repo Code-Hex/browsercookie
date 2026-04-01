@@ -23,7 +23,12 @@ func TestSmokeMacOS(t *testing.T) {
 		{name: "Vivaldi", fn: Vivaldi},
 		{name: "Edge", fn: Edge},
 		{name: "EdgeDev", fn: EdgeDev},
+		{name: "Arc", fn: Arc},
+		{name: "Opera", fn: Opera},
+		{name: "OperaGX", fn: OperaGX},
 		{name: "Firefox", fn: Firefox},
+		{name: "LibreWolf", fn: LibreWolf},
+		{name: "Zen", fn: Zen},
 		{name: "Safari", fn: Safari},
 	}
 

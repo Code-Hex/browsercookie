@@ -112,3 +112,31 @@ func TestJarKeepsDeterministicOverwriteOrder(t *testing.T) {
 		t.Fatalf("cookie value = %q, want %q", cookies[0].Value, "new")
 	}
 }
+
+func TestFilterCookiesReturnsNotFoundWhenDomainsMiss(t *testing.T) {
+	filtered, err := filterCookies([]*http.Cookie{
+		{Name: "session", Domain: ".example.com", Path: "/"},
+	}, []string{"example.org"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("filterCookies() error = %v, want ErrNotFound", err)
+	}
+	if filtered != nil {
+		t.Fatalf("filterCookies() = %v, want nil", filtered)
+	}
+}
+
+func TestFilterCookiesKeepsMatchingDomains(t *testing.T) {
+	filtered, err := filterCookies([]*http.Cookie{
+		{Name: "root", Domain: ".example.com", Path: "/"},
+		{Name: "other", Domain: ".example.org", Path: "/"},
+	}, []string{"example.com"})
+	if err != nil {
+		t.Fatalf("filterCookies() error = %v", err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
+	}
+	if filtered[0].Name != "root" {
+		t.Fatalf("filtered cookie = %#v", filtered[0])
+	}
+}

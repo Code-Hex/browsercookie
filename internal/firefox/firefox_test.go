@@ -100,6 +100,31 @@ Default=1
 	}
 }
 
+func TestParseProfileAcceptsBrowserRootDirectory(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	profilesINI := filepath.Join(root, "profiles.ini")
+	if err := os.WriteFile(profilesINI, []byte(`
+[Profile0]
+Name=default
+IsRelative=1
+Path=Profiles/default-release
+Default=1
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, err := parseProfile(root)
+	if err != nil {
+		t.Fatalf("parseProfile() error = %v", err)
+	}
+	want := filepath.Join(root, "Profiles", "default-release")
+	if got != want {
+		t.Fatalf("parseProfile() = %q, want %q", got, want)
+	}
+}
+
 func writeFirefoxDB(t *testing.T, path string, expiry time.Time) {
 	t.Helper()
 

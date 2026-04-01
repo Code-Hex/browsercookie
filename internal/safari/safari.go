@@ -1,5 +1,7 @@
 package safari
 
+import "github.com/Code-Hex/browsercookie/internal/browsercfg"
+
 // Browser describes Safari cookie store locations.
 type Browser struct {
 	Name               string
@@ -16,9 +18,6 @@ func NewLoader() Loader {
 
 // SafariBrowser describes Safari.
 var SafariBrowser = Browser{
-	Name: "safari",
-	CookieFilePatterns: []string{
-		"~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies",
-		"~/Library/Cookies/Cookies.binarycookies",
-	},
+	Name:               browsercfg.MustSafari("safari").Name,
+	CookieFilePatterns: browsercfg.MustSafari("safari").CurrentCookiePatterns(),
 }
