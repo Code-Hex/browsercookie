@@ -1,0 +1,34 @@
+name: browser
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chrome:
+    name: chrome integration
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run real browser integration test
+        env:
+          BROWSERCOOKIE_REAL_BROWSER: "1"
+        run: go test -count=1 -run TestChromeReadsCookieFromRealBrowser -v ./...

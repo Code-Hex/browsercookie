@@ -1,0 +1,46 @@
+name: test
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go-version }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version:
+          - "1.25.0"
+          - "1.26.1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Verify module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run tests
+        run: go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Report coverage summary
+        run: go tool cover -func=coverage.out
