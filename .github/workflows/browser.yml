@@ -26,6 +26,8 @@ jobs:
             test_name: TestEdgeReadsCookieFromRealBrowser
           - browser: firefox
             test_name: TestFirefoxReadsCookieFromRealBrowser
+          - browser: safari
+            test_name: TestSafariReadsCookieFromRealBrowser
 
     steps:
       - name: Checkout
@@ -37,6 +39,10 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Enable Safari WebDriver
+        if: matrix.browser == 'safari'
+        run: sudo safaridriver --enable
 
       - name: Run real browser integration test
         env:

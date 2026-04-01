@@ -67,7 +67,7 @@ func TestFirefoxReadsCookieFromRealBrowser(t *testing.T) {
 	cookieValue := "from-real-firefox"
 	server := startCookieServer(t, cookieName, cookieValue)
 
-	session := startWebDriverSession(t, geckoDriverBinary, firefoxSessionPayload(firefoxBinary), "geckodriver", webdriverProcessArgs("geckodriver", 0)...)
+	session := startWebDriverSession(t, geckoDriverBinary, firefoxSessionPayload(firefoxBinary), "geckodriver", webdriverProcessArgs("geckodriver")...)
 	if err := session.Navigate(server.URL); err != nil {
 		t.Fatalf("navigate error = %v\ngeckodriver output:\n%s", err, session.Output())
 	}
@@ -85,6 +85,33 @@ func TestFirefoxReadsCookieFromRealBrowser(t *testing.T) {
 		t.Fatalf("cookie %q not found in %v\ngeckodriver output:\n%s", cookieName, cookieFiles, session.Output())
 	}
 	session.Close(t)
+}
+
+func TestSafariReadsCookieFromRealBrowser(t *testing.T) {
+	skipUnlessRealBrowserCI(t)
+
+	safariDriverBinary, err := resolveSafariDriverBinary()
+	if err != nil {
+		t.Skipf("safaridriver is not available: %v", err)
+	}
+
+	cookieName := fmt.Sprintf("browsercookie-%d", time.Now().UnixNano())
+	cookieValue := "from-real-safari"
+	server := startCookieServer(t, cookieName, cookieValue)
+
+	session := startWebDriverSession(t, safariDriverBinary, safariSessionPayload(), "safaridriver", webdriverProcessArgs("safaridriver")...)
+	if err := session.Navigate(server.URL); err != nil {
+		t.Fatalf("navigate error = %v\nsafaridriver output:\n%s", err, session.Output())
+	}
+	if _, ok := waitForWebDriverCookie(t, session, cookieName, cookieValue); !ok {
+		t.Fatalf("webdriver cookie %q not found\nsafaridriver output:\n%s", cookieName, session.Output())
+	}
+	session.Close(t)
+
+	cookie := waitForCookieValue(t, Safari, "Safari", nil, cookieName, cookieValue, session.Output)
+	if cookie == nil {
+		t.Fatalf("cookie %q not found in Safari cookie store\nsafaridriver output:\n%s", cookieName, session.Output())
+	}
 }
 
 type mockSecretProvider struct{}
@@ -167,6 +194,13 @@ func resolveGeckoDriverBinary() (string, error) {
 	})
 }
 
+func resolveSafariDriverBinary() (string, error) {
+	return resolveBinary("BROWSERCOOKIE_SAFARIDRIVER_BIN", "safaridriver", []string{
+		"/System/Cryptexes/App/usr/bin/safaridriver",
+		"/usr/bin/safaridriver",
+	})
+}
+
 func resolveBinary(explicitEnv, executableName string, candidates []string) (string, error) {
 	if explicitEnv != "" {
 		if path := os.Getenv(explicitEnv); path != "" {
@@ -224,7 +258,7 @@ func testChromiumReadsCookieFromRealBrowser(t *testing.T, tc chromiumRealBrowser
 	server := startCookieServer(t, cookieName, cookieValue)
 
 	profileDir := t.TempDir()
-	session := startWebDriverSession(t, driverBinary, chromiumSessionPayload(tc.webDriverName, tc.optionsKey, browserBinary, profileDir), tc.name+"driver", webdriverProcessArgs(tc.name+"driver", 0)...)
+	session := startWebDriverSession(t, driverBinary, chromiumSessionPayload(tc.webDriverName, tc.optionsKey, browserBinary, profileDir), tc.name+"driver", webdriverProcessArgs(tc.name+"driver")...)
 	if err := session.Navigate(server.URL); err != nil {
 		t.Fatalf("navigate error = %v\n%s output:\n%s", err, tc.name+"driver", session.Output())
 	}
@@ -314,6 +348,16 @@ func firefoxSessionPayload(firefoxBinary string) map[string]any {
 	}
 }
 
+func safariSessionPayload() map[string]any {
+	return map[string]any{
+		"capabilities": map[string]any{
+			"alwaysMatch": map[string]any{
+				"browserName": "Safari",
+			},
+		},
+	}
+}
+
 type webDriverSession struct {
 	cancel       context.CancelFunc
 	client       *http.Client
@@ -334,7 +378,7 @@ func startWebDriverSession(t *testing.T, driverBinary string, payload map[string
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	args := append([]string{"--port=" + strconv.Itoa(port)}, processArgs...)
+	args := append(webdriverPortArgs(driverName, port), processArgs...)
 	cmd := exec.CommandContext(ctx, driverBinary, args...)
 	session := &webDriverSession{
 		cancel:     cancel,
@@ -362,9 +406,18 @@ func startWebDriverSession(t *testing.T, driverBinary string, payload map[string
 	return session
 }
 
-func webdriverProcessArgs(driverName string, _ int) []string {
+func webdriverPortArgs(driverName string, port int) []string {
 	switch driverName {
-	case "geckodriver":
+	case "safaridriver":
+		return []string{"-p", strconv.Itoa(port)}
+	default:
+		return []string{"--port=" + strconv.Itoa(port)}
+	}
+}
+
+func webdriverProcessArgs(driverName string) []string {
+	switch driverName {
+	case "geckodriver", "safaridriver":
 		return nil
 	default:
 		return []string{"--verbose"}
