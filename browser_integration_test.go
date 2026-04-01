@@ -316,8 +316,16 @@ func testChromiumReadsCookieFromRealBrowser(t *testing.T, tc chromiumRealBrowser
 	}
 	session.Close(t)
 
-	cookieFiles := waitForFilesByBaseName(t, profileDir, "Cookies")
-	cookie := waitForCookieValue(t, tc.load, tc.name, cookieFiles, cookieName, cookieValue, session.Output)
+	cookie, cookieFiles := waitForCookieValueInDiscoveredFiles(
+		t,
+		tc.load,
+		tc.name,
+		profileDir,
+		"Cookies",
+		cookieName,
+		cookieValue,
+		session.Output,
+	)
 	if cookie == nil {
 		t.Fatalf("cookie %q not found in %v\n%s output:\n%s", cookieName, cookieFiles, tc.name+"driver", session.Output())
 	}
@@ -352,8 +360,16 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	time.Sleep(3 * time.Second)
 	browser.Close(t)
 
-	cookieFiles := waitForFilesByBaseNameWithDebug(t, profileDir, "Cookies", browser.Output)
-	cookie := waitForCookieValue(t, tc.load, tc.name, cookieFiles, cookieName, cookieValue, browser.Output)
+	cookie, cookieFiles := waitForCookieValueInDiscoveredFiles(
+		t,
+		tc.load,
+		tc.name,
+		profileDir,
+		"Cookies",
+		cookieName,
+		cookieValue,
+		browser.Output,
+	)
 	if cookie == nil {
 		t.Fatalf("cookie %q not found in %v\n%s output:\n%s", cookieName, cookieFiles, tc.name, browser.Output())
 	}
@@ -888,6 +904,55 @@ func waitForCookieValue(
 		t.Fatalf("%s() never exposed cookie %q: %v\ndebug output:\n%s", browserName, cookieName, lastErr, debugOutput())
 	}
 	return nil
+}
+
+func waitForCookieValueInDiscoveredFiles(
+	t *testing.T,
+	load func(...Option) ([]*http.Cookie, error),
+	browserName string,
+	root string,
+	baseName string,
+	cookieName string,
+	cookieValue string,
+	debugOutput func() string,
+) (*http.Cookie, []string) {
+	t.Helper()
+
+	deadline := time.Now().Add(30 * time.Second)
+	var (
+		lastErr   error
+		lastPaths []string
+	)
+	for time.Now().Before(deadline) {
+		paths, err := findFilesByBaseName(root, baseName)
+		if err != nil {
+			lastErr = err
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		lastPaths = append(lastPaths[:0], paths...)
+		if len(paths) == 0 {
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+
+		cookies, err := load(WithCookieFiles(paths...))
+		if err != nil {
+			lastErr = err
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		cookie := findCookieByName(cookies, cookieName)
+		if cookie != nil && cookie.Value == cookieValue {
+			return cookie, paths
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("%s() never exposed cookie %q from %v: %v\ndebug output:\n%s", browserName, cookieName, lastPaths, lastErr, debugOutput())
+	}
+	t.Fatalf("cookie %q not found in %v\ndebug output:\n%s", cookieName, lastPaths, debugOutput())
+	return nil, nil
 }
 
 type webdriverCookie struct {
