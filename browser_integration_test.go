@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -136,6 +137,45 @@ func TestSafariReadsCookieFromAutomationSession(t *testing.T) {
 		t.Fatalf("webdriver cookie %q not found\nsafaridriver output:\n%s", cookieName, session.Output())
 	}
 	session.Close(t)
+}
+
+func TestCookieServerWaitsForAcceptedCookie(t *testing.T) {
+	cookieName := "browsercookie-test"
+	cookieValue := "from-cookie-server"
+	server := startCookieServer(t, cookieName, cookieValue)
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New() error = %v", err)
+	}
+	client := &http.Client{
+		Jar:     jar,
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("initial GET error = %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	server.WaitForRequest(t, "test-client", func() string { return "" })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = client.Get(server.URL + "/probe")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusNoContent {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	server.WaitForCookieAcceptance(t, "test-client", func() string { return "" })
 }
 
 type mockSecretProvider struct{}
@@ -357,6 +397,7 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir)
 	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
 	server.WaitForRequest(t, tc.name, browser.Output)
+	server.WaitForCookieAcceptance(t, tc.name, browser.Output)
 
 	initial := waitForCookieValueInDiscoveredFilesWithin(
 		tc.load,
@@ -402,7 +443,10 @@ func skipUnlessRealBrowserCI(t *testing.T) {
 
 type cookieServer struct {
 	*httptest.Server
-	requests chan struct{}
+	requests      chan struct{}
+	accepted      chan struct{}
+	expectedName  string
+	expectedValue string
 }
 
 func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServer {
@@ -410,7 +454,22 @@ func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServ
 
 	expiresAt := time.Now().Add(2 * time.Hour).UTC()
 	requests := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	accepted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requestHasCookie(r, cookieName, cookieValue) {
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+		}
+		if r.URL.Path == "/probe" {
+			if requestHasCookie(r, cookieName, cookieValue) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     cookieName,
 			Value:    cookieValue,
@@ -418,7 +477,8 @@ func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServ
 			HttpOnly: true,
 			Expires:  expiresAt,
 		})
-		_, _ = w.Write([]byte("<!doctype html><title>browsercookie</title>ok"))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, cookieProbePage())
 		select {
 		case requests <- struct{}{}:
 		default:
@@ -426,9 +486,42 @@ func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServ
 	}))
 	t.Cleanup(server.Close)
 	return &cookieServer{
-		Server:   server,
-		requests: requests,
+		Server:        server,
+		requests:      requests,
+		accepted:      accepted,
+		expectedName:  cookieName,
+		expectedValue: cookieValue,
 	}
+}
+
+func cookieProbePage() string {
+	return `<!doctype html>
+<title>browsercookie</title>
+<img src="/probe" alt="" />
+<script>
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+(async () => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      const response = await fetch('/probe', {
+        cache: 'no-store',
+        credentials: 'include',
+      });
+      if (response.ok) {
+        break;
+      }
+    } catch (_) {
+    }
+    await sleep(250);
+  }
+})();
+</script>
+ok`
+}
+
+func requestHasCookie(r *http.Request, name, value string) bool {
+	cookie, err := r.Cookie(name)
+	return err == nil && cookie.Value == value
 }
 
 type browserProcess struct {
@@ -1125,6 +1218,24 @@ func (s *cookieServer) WaitForRequest(t *testing.T, browserName string, debugOut
 		return
 	case <-time.After(20 * time.Second):
 		t.Fatalf("%s browser never reached %s\ndebug output:\n%s", browserName, s.URL, debugOutput())
+	}
+}
+
+func (s *cookieServer) WaitForCookieAcceptance(t *testing.T, browserName string, debugOutput func() string) {
+	t.Helper()
+
+	select {
+	case <-s.accepted:
+		return
+	case <-time.After(20 * time.Second):
+		t.Fatalf(
+			"%s browser never sent accepted cookie %q=%q back to %s\ndebug output:\n%s",
+			browserName,
+			s.expectedName,
+			s.expectedValue,
+			s.URL,
+			debugOutput(),
+		)
 	}
 }
 
