@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -348,6 +349,7 @@ func testChromiumReadsCookieFromCommandLineBrowser(t *testing.T, tc chromiumComm
 	browser := startChromiumBrowserProcess(t, tc.name, browserBinary, profileDir)
 	navigateChromiumBrowser(t, tc.name, profileDir, server.URL, browser.Output)
 	server.WaitForRequest(t, tc.name, browser.Output)
+	time.Sleep(500 * time.Millisecond)
 	browser.Close(t)
 
 	cookieFiles := waitForFilesByBaseNameWithDebug(t, profileDir, "Cookies", browser.Output)
@@ -400,7 +402,6 @@ func startCookieServer(t *testing.T, cookieName, cookieValue string) *cookieServ
 }
 
 type browserProcess struct {
-	cancel  context.CancelFunc
 	cmd     *exec.Cmd
 	logFile *os.File
 	logPath string
@@ -410,20 +411,16 @@ type browserProcess struct {
 func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profileDir string) *browserProcess {
 	t.Helper()
 
-	ctx, cancel := context.WithCancel(context.Background())
-
 	logFile, err := os.CreateTemp(t.TempDir(), browserName+"-*.log")
 	if err != nil {
-		cancel()
 		t.Fatalf("create %s log file error = %v", browserName, err)
 	}
 
-	cmd := exec.CommandContext(ctx, browserBinary, chromiumCommandLineArgs(profileDir)...)
+	cmd := exec.Command(browserBinary, chromiumCommandLineArgs(profileDir)...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
 	process := &browserProcess{
-		cancel:  cancel,
 		cmd:     cmd,
 		logFile: logFile,
 		logPath: logFile.Name(),
@@ -431,7 +428,6 @@ func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profi
 	}
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		cancel()
 		t.Fatalf("start %s browser error = %v", browserName, err)
 	}
 	t.Cleanup(func() {
@@ -986,12 +982,14 @@ func (p *browserProcess) Close(t *testing.T) {
 		return
 	}
 
-	p.cancel()
-
 	done := make(chan error, 1)
 	go func() {
 		done <- p.cmd.Wait()
 	}()
+
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	}
 
 	select {
 	case err := <-done:
