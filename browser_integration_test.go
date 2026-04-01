@@ -359,7 +359,8 @@ type webDriverSession struct {
 	cancel       context.CancelFunc
 	client       *http.Client
 	cmd          *exec.Cmd
-	outputBuf    bytes.Buffer
+	logFile      *os.File
+	logPath      string
 	baseURL      string
 	sessionID    string
 	driverName   string
@@ -377,16 +378,24 @@ func startWebDriverSession(t *testing.T, driverBinary string, payload map[string
 	ctx, cancel := context.WithCancel(context.Background())
 	args := append(webdriverPortArgs(driverName, port), processArgs...)
 	cmd := exec.CommandContext(ctx, driverBinary, args...)
+	logFile, err := os.CreateTemp(t.TempDir(), driverName+"-*.log")
+	if err != nil {
+		cancel()
+		t.Fatalf("create %s log file error = %v", driverName, err)
+	}
 	session := &webDriverSession{
 		cancel:     cancel,
 		client:     &http.Client{Timeout: webdriverRequestTimeout(driverName)},
 		cmd:        cmd,
+		logFile:    logFile,
+		logPath:    logFile.Name(),
 		baseURL:    fmt.Sprintf("http://127.0.0.1:%d", port),
 		driverName: driverName,
 	}
-	cmd.Stdout = &session.outputBuf
-	cmd.Stderr = &session.outputBuf
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		cancel()
 		t.Fatalf("start %s error = %v", driverName, err)
 	}
@@ -423,7 +432,7 @@ func webdriverProcessArgs(driverName string) []string {
 
 func webdriverRequestTimeout(driverName string) time.Duration {
 	switch driverName {
-	case "safaridriver":
+	case "geckodriver", "safaridriver":
 		return 30 * time.Second
 	default:
 		return 5 * time.Second
@@ -512,17 +521,34 @@ func (s *webDriverSession) Close(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		_ = s.cmd.Process.Kill()
-		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) {
-				t.Fatalf("%s kill error = %v\n%s", s.driverName, err, s.Output())
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("%s kill error = %v\n%s", s.driverName, err, s.Output())
+				}
 			}
+		case <-time.After(2 * time.Second):
+			// Firefox likes to keep inherited descriptors alive via child processes.
+			// At this point the driver has been killed, so don't let cleanup hang forever.
 		}
+	}
+	if s.logFile != nil {
+		_ = s.logFile.Close()
+		s.logFile = nil
 	}
 }
 
 func (s *webDriverSession) Output() string {
-	return s.outputBuf.String()
+	if s.logPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(s.logPath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func (s *webDriverSession) StringCapability(key string) string {
