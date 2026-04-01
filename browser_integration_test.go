@@ -67,7 +67,7 @@ func TestFirefoxReadsCookieFromRealBrowser(t *testing.T) {
 	cookieValue := "from-real-firefox"
 	server := startCookieServer(t, cookieName, cookieValue)
 
-	session := startWebDriverSession(t, geckoDriverBinary, firefoxSessionPayload(firefoxBinary), "geckodriver")
+	session := startWebDriverSession(t, geckoDriverBinary, firefoxSessionPayload(firefoxBinary), "geckodriver", webdriverProcessArgs("geckodriver", 0)...)
 	if err := session.Navigate(server.URL); err != nil {
 		t.Fatalf("navigate error = %v\ngeckodriver output:\n%s", err, session.Output())
 	}
@@ -225,7 +225,7 @@ func testChromiumReadsCookieFromRealBrowser(t *testing.T, tc chromiumRealBrowser
 	server := startCookieServer(t, cookieName, cookieValue)
 
 	profileDir := t.TempDir()
-	session := startWebDriverSession(t, driverBinary, chromiumSessionPayload(tc.webDriverName, tc.optionsKey, browserBinary, profileDir), tc.name+"driver")
+	session := startWebDriverSession(t, driverBinary, chromiumSessionPayload(tc.webDriverName, tc.optionsKey, browserBinary, profileDir), tc.name+"driver", webdriverProcessArgs(tc.name+"driver", 0)...)
 	if err := session.Navigate(server.URL); err != nil {
 		t.Fatalf("navigate error = %v\n%s output:\n%s", err, tc.name+"driver", session.Output())
 	}
@@ -326,7 +326,7 @@ type webDriverSession struct {
 	capabilities map[string]any
 }
 
-func startWebDriverSession(t *testing.T, driverBinary string, payload map[string]any, driverName string) *webDriverSession {
+func startWebDriverSession(t *testing.T, driverBinary string, payload map[string]any, driverName string, processArgs ...string) *webDriverSession {
 	t.Helper()
 
 	port, err := reserveLocalPort()
@@ -335,7 +335,8 @@ func startWebDriverSession(t *testing.T, driverBinary string, payload map[string
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, driverBinary, "--port="+strconv.Itoa(port), "--verbose")
+	args := append([]string{"--port=" + strconv.Itoa(port)}, processArgs...)
+	cmd := exec.CommandContext(ctx, driverBinary, args...)
 	session := &webDriverSession{
 		cancel:     cancel,
 		client:     &http.Client{Timeout: 5 * time.Second},
@@ -360,6 +361,15 @@ func startWebDriverSession(t *testing.T, driverBinary string, payload map[string
 		t.Fatalf("createSession() error = %v\n%s", err, session.Output())
 	}
 	return session
+}
+
+func webdriverProcessArgs(driverName string, _ int) []string {
+	switch driverName {
+	case "geckodriver":
+		return nil
+	default:
+		return []string{"--verbose"}
+	}
 }
 
 func (s *webDriverSession) waitUntilReady() error {
