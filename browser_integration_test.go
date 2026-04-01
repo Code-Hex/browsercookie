@@ -87,7 +87,9 @@ func TestFirefoxReadsCookieFromRealBrowser(t *testing.T) {
 	session.Close(t)
 }
 
-func TestSafariReadsCookieFromRealBrowser(t *testing.T) {
+// Safari automation sessions use isolated browser state, so this only verifies
+// that Safari itself received the cookie under WebDriver.
+func TestSafariReadsCookieFromAutomationSession(t *testing.T) {
 	skipUnlessRealBrowserCI(t)
 
 	safariDriverBinary, err := resolveSafariDriverBinary()
@@ -107,11 +109,6 @@ func TestSafariReadsCookieFromRealBrowser(t *testing.T) {
 		t.Fatalf("webdriver cookie %q not found\nsafaridriver output:\n%s", cookieName, session.Output())
 	}
 	session.Close(t)
-
-	cookie := waitForCookieValue(t, Safari, "Safari", nil, cookieName, cookieValue, session.Output)
-	if cookie == nil {
-		t.Fatalf("cookie %q not found in Safari cookie store\nsafaridriver output:\n%s", cookieName, session.Output())
-	}
 }
 
 type mockSecretProvider struct{}

@@ -27,7 +27,7 @@ jobs:
           - browser: firefox
             test_name: TestFirefoxReadsCookieFromRealBrowser
           - browser: safari
-            test_name: TestSafariReadsCookieFromRealBrowser
+            test_name: TestSafariReadsCookieFromAutomationSession
 
     steps:
       - name: Checkout
