@@ -18,8 +18,6 @@ import (
 )
 
 func TestLoaderLoadFallsBackToPeanutsOnLinux(t *testing.T) {
-	t.Parallel()
-
 	key := pbkdf2.Key([]byte("peanuts"), []byte(chromiumSalt), chromiumIterations, chromiumKeyLength, sha1.New)
 	cookieFile := filepath.Join(t.TempDir(), "Cookies")
 	expires := time.Unix(1_700_000_000, 0).UTC()
@@ -49,8 +47,6 @@ func TestLoaderLoadFallsBackToPeanutsOnLinux(t *testing.T) {
 }
 
 func TestLinuxPasswordsUsesConfiguredOrderAndDedupes(t *testing.T) {
-	t.Parallel()
-
 	original := newLinuxKeyringClient
 	t.Cleanup(func() { newLinuxKeyringClient = original })
 
@@ -85,8 +81,6 @@ func TestLinuxPasswordsUsesConfiguredOrderAndDedupes(t *testing.T) {
 }
 
 func TestLinuxPasswordsUsesElectronFallbackCandidates(t *testing.T) {
-	t.Parallel()
-
 	original := newLinuxKeyringClient
 	t.Cleanup(func() { newLinuxKeyringClient = original })
 

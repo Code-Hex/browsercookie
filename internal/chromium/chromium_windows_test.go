@@ -118,7 +118,7 @@ func TestLoaderLoadDiscoversElectronPartitionCookiesOnWindows(t *testing.T) {
 	root := t.TempDir()
 	localStatePath := filepath.Join(root, "Local State")
 	rootCookieFile := filepath.Join(root, "Cookies")
-	partitionCookieFile := filepath.Join(root, "Partitions", "persist:workspace", "Network", "Cookies")
+	partitionCookieFile := filepath.Join(root, "Partitions", "persist-workspace", "Network", "Cookies")
 	expires := time.Unix(1_700_000_000, 0).UTC()
 
 	if err := os.MkdirAll(filepath.Dir(partitionCookieFile), 0o755); err != nil {

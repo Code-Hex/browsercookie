@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 
@@ -54,6 +53,7 @@ func ResolveConfig(app string, cfg Config) Config {
 	return resolveConfigFromBundles(app, cfg, bundles)
 }
 
+// Inspect reports persisted auth-related storage used by one Electron app.
 func Inspect(app string, cfg Config) (*Report, error) {
 	report := &Report{App: strings.TrimSpace(app)}
 	cfg = normalizeConfig(cfg)
@@ -829,47 +829,6 @@ func chromiumVersionForElectron(version string) string {
 		return electronToChromium[key]
 	}
 	return ""
-}
-
-func mergeSignals(values ...[]Signal) []Signal {
-	var out []Signal
-	for _, value := range values {
-		out = append(out, value...)
-	}
-	return uniqueSignals(out)
-}
-
-func mergeLocations(values ...[]Location) []Location {
-	var out []Location
-	for _, value := range values {
-		out = append(out, value...)
-	}
-	return uniqueLocations(out)
-}
-
-func containsFold(values []string, want string) bool {
-	for _, value := range values {
-		if strings.EqualFold(value, want) {
-			return true
-		}
-	}
-	return false
-}
-
-func appendIfMissing(values []string, extras ...string) []string {
-	for _, extra := range extras {
-		if containsFold(values, extra) {
-			continue
-		}
-		values = append(values, extra)
-	}
-	return values
-}
-
-func sortAndUniqueValues(values []string) []string {
-	values = uniqueNonEmptyStrings(values)
-	slices.Sort(values)
-	return values
 }
 
 func canonicalPathKey(path string) string {

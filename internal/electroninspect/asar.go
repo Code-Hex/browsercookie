@@ -1,3 +1,4 @@
+// Package electroninspect inspects persisted Electron auth storage.
 package electroninspect
 
 import (
