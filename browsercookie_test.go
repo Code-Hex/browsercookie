@@ -139,3 +139,11 @@ func TestLoadForwardsWithDomainsToBrowserLoaders(t *testing.T) {
 		t.Fatalf("cookies = %#v", cookies)
 	}
 }
+
+func TestLoadOrderDoesNotAutoDiscoverElectron(t *testing.T) {
+	for _, loader := range loadOrder {
+		if strings.Contains(loader.name, "electron") {
+			t.Fatalf("loadOrder unexpectedly contains electron loader: %q", loader.name)
+		}
+	}
+}

@@ -8,13 +8,18 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/Code-Hex/browsercookie/internal/browsercfg"
 	"github.com/Code-Hex/browsercookie/internal/errdefs"
+	"golang.org/x/sys/windows"
 	_ "modernc.org/sqlite"
 )
 
@@ -106,6 +111,57 @@ func TestDecryptValueRejectsV20CookiesAsUnsupported(t *testing.T) {
 	}
 }
 
+func TestLoaderLoadDiscoversElectronPartitionCookiesOnWindows(t *testing.T) {
+	t.Parallel()
+
+	key := []byte("0123456789abcdef0123456789abcdef")
+	root := t.TempDir()
+	localStatePath := filepath.Join(root, "Local State")
+	rootCookieFile := filepath.Join(root, "Cookies")
+	partitionCookieFile := filepath.Join(root, "Partitions", "persist:workspace", "Network", "Cookies")
+	expires := time.Unix(1_700_000_000, 0).UTC()
+
+	if err := os.MkdirAll(filepath.Dir(partitionCookieFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(localStatePath, []byte(fmt.Sprintf(`{"os_crypt":{"encrypted_key":%q}}`, encodeLegacyKeyForLocalState(t, key))), 0o644); err != nil {
+		t.Fatalf("WriteFile(Local State) error = %v", err)
+	}
+
+	writeWindowsChromiumDB(t, rootCookieFile, 24, []windowsChromiumRow{
+		{
+			host:    ".example.com",
+			path:    "/",
+			secure:  1,
+			expires: chromiumExpires(expires),
+			name:    "root",
+			enc:     encryptWindowsValue(t, "from-root", key, true),
+		},
+	})
+	writeWindowsChromiumDB(t, partitionCookieFile, 24, []windowsChromiumRow{
+		{
+			host:    ".example.com",
+			path:    "/workspace",
+			secure:  1,
+			expires: chromiumExpires(expires.Add(10 * time.Second)),
+			name:    "partition",
+			enc:     encryptWindowsValue(t, "from-partition", key, true),
+		},
+	})
+
+	browser := BrowserFromSpec(browsercfg.ElectronSpec("TestApp", []string{root}, []string{"TestApp"}))
+	cookies, err := NewLoader(nil).Load(browser, nil, nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cookies) != 2 {
+		t.Fatalf("len(cookies) = %d, want 2", len(cookies))
+	}
+	if cookies[0].Name != "root" || cookies[1].Name != "partition" {
+		t.Fatalf("cookies = %#v", cookies)
+	}
+}
+
 type windowsChromiumRow struct {
 	host    string
 	path    string
@@ -178,4 +234,25 @@ func encryptWindowsValue(t *testing.T, value string, key []byte, withDomainHash 
 
 func chromiumExpires(expiry time.Time) int64 {
 	return expiry.UnixMicro() + unixToNTEpochOffsetMicr
+}
+
+func encodeLegacyKeyForLocalState(t *testing.T, key []byte) string {
+	t.Helper()
+
+	in := windows.DataBlob{
+		Size: uint32(len(key)),
+		Data: &key[0],
+	}
+	var out windows.DataBlob
+	if err := windows.CryptProtectData(&in, nil, nil, 0, nil, 0, &out); err != nil {
+		t.Fatalf("CryptProtectData() error = %v", err)
+	}
+	if out.Data == nil || out.Size == 0 {
+		t.Fatal("CryptProtectData() returned empty output")
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
+
+	protected := unsafe.Slice(out.Data, out.Size)
+	payload := append([]byte("DPAPI"), protected...)
+	return base64.StdEncoding.EncodeToString(payload)
 }

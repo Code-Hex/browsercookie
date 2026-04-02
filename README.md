@@ -23,8 +23,13 @@ They solve the same kind of problem in other ecosystems. This repository does it
 - Read cookies from local browser stores
 - Load from every supported browser with `Load()`
 - Load from a specific browser with functions such as `Chrome()`, `Firefox()`, or `Safari()`
+- Load cookies from Electron apps explicitly with `Electron(app)`
+- Inspect persisted Electron auth storage with `InspectElectronAuthStorage(app)`
 - Filter cookies with `WithDomains(...)`
 - Override auto-discovered cookie store paths with `WithCookieFiles(...)`
+- Override Electron bundle paths with `WithElectronAppPaths(...)`
+- Override Electron session roots with `WithElectronSessionRoots(...)`
+- Override Electron keychain/keyring names with `WithElectronKeyringNames(...)`
 - Convert `[]*http.Cookie` into a `*cookiejar.Jar` with `Jar(...)`
 
 ## Supported browsers and operating systems
@@ -48,6 +53,8 @@ The package currently knows these browser and OS combinations:
 | Zen | yes | yes | yes |
 
 Support still depends on the browser and the operating system. When the current platform is not implemented, the package returns `ErrUnsupported`.
+
+Electron apps are also supported as an explicit opt-in on Linux, macOS, and Windows with `Electron(app)`, as long as the app uses Chromium-style persisted session storage.
 
 ## Install
 
@@ -107,6 +114,31 @@ if err != nil {
 }
 ```
 
+Electron apps are loaded explicitly and are not part of `Load()` auto-discovery:
+
+```go
+cookies, err := browsercookie.Electron("Code")
+if err != nil {
+	// handle error
+}
+```
+
+If you want to inspect persisted Electron auth storage without reading secret values, use the inspection API:
+
+```go
+report, err := browsercookie.InspectElectronAuthStorage(
+	"Discord",
+	browsercookie.WithElectronAppPaths("/Applications/Discord.app"),
+)
+if err != nil {
+	// handle error
+}
+
+for _, location := range report.Locations {
+	log.Printf("%s %s %s", location.Kind, location.Status, location.Path)
+}
+```
+
 If you already know the cookie file path, you can override discovery:
 
 ```go
@@ -117,6 +149,30 @@ if err != nil {
 	// handle error
 }
 ```
+
+If the Electron app stores session data outside the default `userData` or `sessionData` path, override the session roots directly:
+
+```go
+cookies, err := browsercookie.Electron(
+	"Code",
+	browsercookie.WithElectronSessionRoots("/path/to/sessionData"),
+	browsercookie.WithElectronKeyringNames("Code"),
+)
+if err != nil {
+	// handle error
+}
+```
+
+## Electron notes
+
+- `Electron(app)` reads Chromium-style cookie databases only.
+- `InspectElectronAuthStorage(app)` performs static discovery only. It reports persisted locations, bundle references, and secret-store refs without returning the stored values.
+- It loads both the default session and persisted partition stores under `Partitions/*`.
+- The inspection API can report `Cookies`, `Login Data`, `Local Storage`, `Session Storage`, `IndexedDB`, partition storage, `safeStorage`, `keytar`, and `Local State` references.
+- In-memory partitions cannot be read from disk.
+- Apps that use `session.fromPath(...)` outside the default app data directory need `WithElectronSessionRoots(...)`.
+- Linux and Windows bundle discovery are intentionally conservative. Use `WithElectronAppPaths(...)` when you need deterministic bundle inspection there.
+- On Windows, Chromium v20 app-bound encrypted cookies still follow the existing `ErrUnsupported` limitation.
 
 ## Errors
 

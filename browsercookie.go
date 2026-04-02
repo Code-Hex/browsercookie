@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/Code-Hex/browsercookie/internal/browsercfg"
 	chromiumloader "github.com/Code-Hex/browsercookie/internal/chromium"
 	"github.com/Code-Hex/browsercookie/internal/cookieutil"
+	"github.com/Code-Hex/browsercookie/internal/electroninspect"
 	"github.com/Code-Hex/browsercookie/internal/firefox"
 	"github.com/Code-Hex/browsercookie/internal/safari"
 	"github.com/Code-Hex/browsercookie/internal/secrets"
@@ -78,6 +80,11 @@ func Opera(opts ...Option) ([]*http.Cookie, error) {
 // OperaGX loads cookies from Opera GX.
 func OperaGX(opts ...Option) ([]*http.Cookie, error) {
 	return loadOperaGX(collectOptions(opts...))
+}
+
+// Electron loads cookies from an Electron app's persisted session storage.
+func Electron(app string, opts ...Option) ([]*http.Cookie, error) {
+	return loadElectron(app, collectOptions(opts...))
 }
 
 // Firefox loads cookies from Firefox.
@@ -176,6 +183,10 @@ func loadOperaGX(cfg options) ([]*http.Cookie, error) {
 	return loadChromiumBrowser(chromiumloader.OperaGXBrowser, cfg)
 }
 
+func loadElectron(app string, cfg options) ([]*http.Cookie, error) {
+	return loadChromiumBrowser(electronBrowser(app, cfg), cfg)
+}
+
 func loadFirefox(cfg options) ([]*http.Cookie, error) {
 	loader := firefox.NewLoader()
 	cookies, err := loader.Load(firefox.FirefoxBrowser, cfg.cookieFilesCopy(), cfg.domainsCopy())
@@ -219,4 +230,14 @@ func loadChromiumBrowser(browser chromiumloader.Browser, cfg options) ([]*http.C
 		return nil, fmt.Errorf("%s: %w", browser.Name, err)
 	}
 	return cookies, nil
+}
+
+func electronBrowser(app string, cfg options) chromiumloader.Browser {
+	resolved := electroninspect.ResolveConfig(app, electroninspect.Config{
+		AppPaths:     cfg.electronAppPathsCopy(),
+		SessionRoots: cfg.electronSessionRootsCopy(),
+		KeyringNames: cfg.electronKeyringNamesCopy(),
+	})
+	spec := browsercfg.ElectronSpec(app, resolved.SessionRoots, resolved.KeyringNames)
+	return chromiumloader.BrowserFromSpec(spec)
 }

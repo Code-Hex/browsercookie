@@ -56,6 +56,104 @@ func TestChromiumSpecExposesBackendMetadata(t *testing.T) {
 	}
 }
 
+func TestElectronSpecAddsDefaultAndPartitionCookiePaths(t *testing.T) {
+	t.Parallel()
+
+	spec := ElectronSpec("Code", nil, nil)
+	got := spec.CookiePatterns("darwin")
+	want := []string{
+		"~/Library/Application Support/Code/Cookies",
+		"~/Library/Application Support/Code/Network/Cookies",
+		"~/Library/Application Support/Code/Partitions/*/Cookies",
+		"~/Library/Application Support/Code/Partitions/*/Network/Cookies",
+	}
+	for _, path := range want {
+		if !containsString(got, path) {
+			t.Fatalf("CookiePatterns() missing %q in %v", path, got)
+		}
+	}
+}
+
+func TestElectronSpecAddsMacSecretFallbacks(t *testing.T) {
+	t.Parallel()
+
+	secrets := ElectronSpec("Code", nil, nil).Secrets("darwin")
+	if len(secrets) < 3 {
+		t.Fatalf("len(secrets) = %d, want at least 3", len(secrets))
+	}
+	want := []Secret{
+		{Service: "Code Safe Storage", Account: "Code"},
+		{Service: "Chrome Safe Storage", Account: "Chrome"},
+		{Service: "Chromium Safe Storage", Account: "Chromium"},
+	}
+	for i, secret := range want {
+		if secrets[i] != secret {
+			t.Fatalf("secrets[%d] = %#v, want %#v", i, secrets[i], secret)
+		}
+	}
+}
+
+func TestElectronSpecAddsLinuxKeyringFallbacks(t *testing.T) {
+	t.Parallel()
+
+	spec := ElectronSpec("My App", nil, []string{"Code", "My App"})
+	libsecretRefs := spec.LinuxLibsecretRefs("linux")
+	kwalletRefs := spec.LinuxKWalletRefs("linux")
+
+	wantLibsecret := []LinuxLibsecretRef{
+		{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "Code"},
+		{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "Code"},
+		{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "code"},
+		{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "code"},
+		{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "My App"},
+		{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "My App"},
+		{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "my-app"},
+		{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "my-app"},
+		{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chrome"},
+		{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chrome"},
+		{Schema: "chrome_libsecret_os_crypt_password_v2", Application: "chromium"},
+		{Schema: "chrome_libsecret_os_crypt_password_v1", Application: "chromium"},
+	}
+	for i, ref := range wantLibsecret {
+		if libsecretRefs[i] != ref {
+			t.Fatalf("libsecretRefs[%d] = %#v, want %#v", i, libsecretRefs[i], ref)
+		}
+	}
+
+	wantKWallet := []LinuxKWalletRef{
+		{Folder: "Code Keys", Key: "Code Safe Storage"},
+		{Folder: "My App Keys", Key: "My App Safe Storage"},
+		{Folder: "Chrome Keys", Key: "Chrome Safe Storage"},
+		{Folder: "Chromium Keys", Key: "Chromium Safe Storage"},
+	}
+	for i, ref := range wantKWallet {
+		if kwalletRefs[i] != ref {
+			t.Fatalf("kwalletRefs[%d] = %#v, want %#v", i, kwalletRefs[i], ref)
+		}
+	}
+}
+
+func TestElectronSpecUsesExplicitSessionRoots(t *testing.T) {
+	t.Parallel()
+
+	spec := ElectronSpec("Code", []string{"/tmp/electron-root"}, nil)
+	got := spec.CookiePatterns("windows")
+	want := []string{
+		"/tmp/electron-root/Cookies",
+		"/tmp/electron-root/Network/Cookies",
+		"/tmp/electron-root/Partitions/*/Cookies",
+		"/tmp/electron-root/Partitions/*/Network/Cookies",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for _, path := range want {
+		if !containsString(got, path) {
+			t.Fatalf("CookiePatterns() missing %q in %v", path, got)
+		}
+	}
+}
+
 func TestMozillaSpecUsesProfileRoots(t *testing.T) {
 	t.Parallel()
 
