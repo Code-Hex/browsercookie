@@ -178,6 +178,30 @@ func TestCookieServerWaitsForAcceptedCookie(t *testing.T) {
 	server.WaitForCookieAcceptance(t, "test-client", func() string { return "" })
 }
 
+func TestChromiumLaunchArgsUsesNewHeadlessForOpera(t *testing.T) {
+	t.Parallel()
+
+	args := chromiumLaunchArgs("opera", "/tmp/profile")
+	if !slices.Contains(args, "--headless=new") {
+		t.Fatalf("chromiumLaunchArgs() = %v, want --headless=new", args)
+	}
+	if slices.Contains(args, "--headless") {
+		t.Fatalf("chromiumLaunchArgs() = %v, did not expect legacy --headless", args)
+	}
+}
+
+func TestChromiumLaunchArgsKeepsLegacyHeadlessForChrome(t *testing.T) {
+	t.Parallel()
+
+	args := chromiumLaunchArgs("chrome", "/tmp/profile")
+	if !slices.Contains(args, "--headless") {
+		t.Fatalf("chromiumLaunchArgs() = %v, want --headless", args)
+	}
+	if slices.Contains(args, "--headless=new") {
+		t.Fatalf("chromiumLaunchArgs() = %v, did not expect --headless=new", args)
+	}
+}
+
 type mockSecretProvider struct{}
 
 func (mockSecretProvider) GenericPassword(service, account string) ([]byte, error) {
@@ -539,7 +563,7 @@ func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profi
 		t.Fatalf("create %s log file error = %v", browserName, err)
 	}
 
-	cmd := exec.Command(browserBinary, chromiumCommandLineArgs(profileDir)...)
+	cmd := exec.Command(browserBinary, chromiumCommandLineArgs(browserName, profileDir)...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -559,14 +583,18 @@ func startChromiumBrowserProcess(t *testing.T, browserName, browserBinary, profi
 	return process
 }
 
-func chromiumCommandLineArgs(profileDir string) []string {
-	args := append([]string(nil), chromiumLaunchArgs(profileDir)...)
+func chromiumCommandLineArgs(browserName, profileDir string) []string {
+	args := append([]string(nil), chromiumLaunchArgs(browserName, profileDir)...)
 	return append(args, "about:blank")
 }
 
-func chromiumLaunchArgs(profileDir string) []string {
+func chromiumLaunchArgs(browserName, profileDir string) []string {
+	headlessArg := "--headless"
+	if browserName == "opera" {
+		headlessArg = "--headless=new"
+	}
 	return []string{
-		"--headless",
+		headlessArg,
 		"--disable-background-timer-throttling",
 		"--disable-backgrounding-occluded-windows",
 		"--disable-gpu",
@@ -601,7 +629,7 @@ func chromiumSessionPayload(browserName, optionsKey, browserBinary, profileDir s
 				"browserName": browserName,
 				optionsKey: map[string]any{
 					"binary": browserBinary,
-					"args":   chromiumLaunchArgs(profileDir),
+					"args":   chromiumLaunchArgs(browserName, profileDir),
 				},
 			},
 		},
