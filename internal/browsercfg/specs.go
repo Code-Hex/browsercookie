@@ -2,8 +2,10 @@
 package browsercfg
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 // Secret identifies a browser decryption secret.
@@ -81,6 +83,30 @@ func MustChromium(name string) ChromiumSpec {
 		panic("unknown chromium browser spec: " + name)
 	}
 	return spec
+}
+
+// ElectronSpec builds a Chromium-compatible spec for one Electron app.
+func ElectronSpec(app string, sessionRoots, keyringNames []string) ChromiumSpec {
+	names := electronKeyringNames(app, keyringNames)
+	return ChromiumSpec{
+		Name: electronSpecName(app),
+		Platforms: map[string]ChromiumPlatform{
+			"darwin": {
+				CookiePathTemplates: electronCookiePathTemplates(electronRoots("darwin", app, sessionRoots)),
+				Secrets:             electronSecrets(names),
+			},
+			"linux": {
+				CookiePathTemplates: electronCookiePathTemplates(electronRoots("linux", app, sessionRoots)),
+				LinuxLibsecretRefs:  electronLinuxLibsecretRefs(names),
+				LinuxKWalletRefs:    electronLinuxKWalletRefs(names),
+			},
+			"windows": {
+				CookiePathTemplates: electronCookiePathTemplates(electronRoots("windows", app, sessionRoots)),
+				LocalStatePaths:     defaultLocalStatePaths(),
+				WindowsKeySources:   defaultWindowsKeySources(),
+			},
+		},
+	}
 }
 
 // MustMozilla returns a Mozilla spec and panics when the name is unknown.
@@ -251,6 +277,7 @@ func replaceChannel(template, channel string) string {
 func defaultLocalStatePaths() []string {
 	return []string{
 		"../../Local State",
+		"../../../Local State",
 		"../Local State",
 		"Local State",
 	}
@@ -735,4 +762,211 @@ func aliasChromiumChannel(base ChromiumSpec, name string, channels map[string][]
 		Name:      name,
 		Platforms: platforms,
 	}
+}
+
+func electronSpecName(app string) string {
+	app = strings.TrimSpace(app)
+	if app == "" {
+		return "electron"
+	}
+	return "electron(" + app + ")"
+}
+
+func electronRoots(goos, app string, sessionRoots []string) []string {
+	if len(sessionRoots) > 0 {
+		return copyStrings(sessionRoots)
+	}
+	app = strings.TrimSpace(app)
+	if app == "" {
+		return nil
+	}
+	switch goos {
+	case "darwin":
+		return []string{"~/Library/Application Support/" + app}
+	case "linux":
+		return []string{"$XDG_CONFIG_HOME/" + app, "~/.config/" + app}
+	case "windows":
+		return []string{"%APPDATA%/" + app, "%LOCALAPPDATA%/" + app}
+	default:
+		return nil
+	}
+}
+
+func electronCookiePathTemplates(roots []string) []string {
+	suffixes := []string{
+		"Cookies",
+		"Network/Cookies",
+		"Partitions/*/Cookies",
+		"Partitions/*/Network/Cookies",
+	}
+	seen := map[string]struct{}{}
+	paths := make([]string, 0, len(roots)*len(suffixes))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		base := strings.TrimRight(filepath.ToSlash(root), "/")
+		for _, suffix := range suffixes {
+			path := base + "/" + suffix
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func electronKeyringNames(app string, keyringNames []string) []string {
+	if len(keyringNames) > 0 {
+		return uniqueNonEmptyStrings(keyringNames)
+	}
+	if strings.TrimSpace(app) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(app)}
+}
+
+func electronSecrets(names []string) []Secret {
+	secrets := make([]Secret, 0, len(names)+2)
+	seen := map[string]struct{}{}
+	for _, name := range uniqueNonEmptyStrings(names) {
+		addSecret(&secrets, seen, Secret{
+			Service: name + " Safe Storage",
+			Account: name,
+		})
+	}
+	addSecret(&secrets, seen, Secret{Service: "Chrome Safe Storage", Account: "Chrome"})
+	addSecret(&secrets, seen, Secret{Service: "Chromium Safe Storage", Account: "Chromium"})
+	return secrets
+}
+
+func electronLinuxLibsecretRefs(names []string) []LinuxLibsecretRef {
+	refs := make([]LinuxLibsecretRef, 0, len(names)*4+4)
+	seen := map[string]struct{}{}
+	for _, name := range uniqueNonEmptyStrings(names) {
+		for _, candidate := range electronLinuxApplications(name) {
+			addLinuxLibsecretRef(&refs, seen, LinuxLibsecretRef{
+				Schema:      "chrome_libsecret_os_crypt_password_v2",
+				Application: candidate,
+			})
+			addLinuxLibsecretRef(&refs, seen, LinuxLibsecretRef{
+				Schema:      "chrome_libsecret_os_crypt_password_v1",
+				Application: candidate,
+			})
+		}
+	}
+	for _, candidate := range []string{"chrome", "chromium"} {
+		addLinuxLibsecretRef(&refs, seen, LinuxLibsecretRef{
+			Schema:      "chrome_libsecret_os_crypt_password_v2",
+			Application: candidate,
+		})
+		addLinuxLibsecretRef(&refs, seen, LinuxLibsecretRef{
+			Schema:      "chrome_libsecret_os_crypt_password_v1",
+			Application: candidate,
+		})
+	}
+	return refs
+}
+
+func electronLinuxKWalletRefs(names []string) []LinuxKWalletRef {
+	refs := make([]LinuxKWalletRef, 0, len(names)+2)
+	seen := map[string]struct{}{}
+	for _, name := range uniqueNonEmptyStrings(names) {
+		addLinuxKWalletRef(&refs, seen, LinuxKWalletRef{
+			Folder: name + " Keys",
+			Key:    name + " Safe Storage",
+		})
+	}
+	addLinuxKWalletRef(&refs, seen, LinuxKWalletRef{
+		Folder: "Chrome Keys",
+		Key:    "Chrome Safe Storage",
+	})
+	addLinuxKWalletRef(&refs, seen, LinuxKWalletRef{
+		Folder: "Chromium Keys",
+		Key:    "Chromium Safe Storage",
+	})
+	return refs
+}
+
+func electronLinuxApplications(name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	return uniqueNonEmptyStrings([]string{name, slugifyLower(name)})
+}
+
+func slugifyLower(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.Grow(len(value))
+	prevDash := false
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			builder.WriteRune(r)
+			prevDash = false
+		default:
+			if prevDash {
+				continue
+			}
+			builder.WriteByte('-')
+			prevDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func addSecret(secrets *[]Secret, seen map[string]struct{}, secret Secret) {
+	key := secret.Service + "\x00" + secret.Account
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*secrets = append(*secrets, secret)
+}
+
+func addLinuxLibsecretRef(refs *[]LinuxLibsecretRef, seen map[string]struct{}, ref LinuxLibsecretRef) {
+	key := ref.Schema + "\x00" + ref.Application
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*refs = append(*refs, ref)
+}
+
+func addLinuxKWalletRef(refs *[]LinuxKWalletRef, seen map[string]struct{}, ref LinuxKWalletRef) {
+	key := ref.Folder + "\x00" + ref.Key
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*refs = append(*refs, ref)
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func copyStrings(values []string) []string {
+	return append([]string(nil), values...)
 }

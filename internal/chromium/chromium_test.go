@@ -8,11 +8,13 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Code-Hex/browsercookie/internal/browsercfg"
 	"github.com/Code-Hex/browsercookie/internal/errdefs"
 	"golang.org/x/crypto/pbkdf2"
 	_ "modernc.org/sqlite"
@@ -156,6 +158,61 @@ func TestLoaderLoadFallsBackToAlternateSecret(t *testing.T) {
 	}
 	if cookies[0].Value != "from-vivaldi" {
 		t.Fatalf("cookie value = %q, want %q", cookies[0].Value, "from-vivaldi")
+	}
+}
+
+func TestLoaderLoadDiscoversElectronPartitionCookies(t *testing.T) {
+	t.Parallel()
+
+	password := []byte("secret-for-tests")
+	key := pbkdf2.Key(password, []byte(chromiumSalt), chromiumIterations, chromiumKeyLength, sha1.New)
+	root := filepath.Join(t.TempDir(), "ElectronApp")
+	rootCookieFile := filepath.Join(root, "Cookies")
+	partitionCookieFile := filepath.Join(root, "Partitions", "persist:workspace", "Cookies")
+	expires := time.Unix(1_700_000_000, 0).UTC()
+
+	for _, path := range []string{rootCookieFile, partitionCookieFile} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(path), err)
+		}
+	}
+
+	writeChromiumDB(t, rootCookieFile, 24, false, []chromiumRow{
+		{
+			host:    ".example.com",
+			path:    "/",
+			secure:  1,
+			expires: chromiumExpires(expires),
+			name:    "root",
+			enc:     encryptValue(t, "from-root", key, true),
+		},
+	})
+	writeChromiumDB(t, partitionCookieFile, 24, false, []chromiumRow{
+		{
+			host:    ".example.com",
+			path:    "/workspace",
+			secure:  1,
+			expires: chromiumExpires(expires.Add(10 * time.Second)),
+			name:    "partition",
+			enc:     encryptValue(t, "from-partition", key, true),
+		},
+	})
+
+	browser := BrowserFromSpec(browsercfg.ElectronSpec("TestApp", []string{root}, []string{"TestApp"}))
+	loader := NewLoader(fakeProvider{
+		passwords: map[secretKey][]byte{
+			{service: "TestApp Safe Storage", account: "TestApp"}: password,
+		},
+	})
+	cookies, err := loader.Load(browser, nil, nil)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cookies) != 2 {
+		t.Fatalf("len(cookies) = %d, want 2", len(cookies))
+	}
+	if cookies[0].Name != "root" || cookies[1].Name != "partition" {
+		t.Fatalf("cookies = %#v", cookies)
 	}
 }
 

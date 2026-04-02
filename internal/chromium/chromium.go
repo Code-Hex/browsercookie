@@ -1,6 +1,8 @@
 package chromium
 
 import (
+	"os"
+
 	"github.com/Code-Hex/browsercookie/internal/browsercfg"
 	"github.com/Code-Hex/browsercookie/internal/secrets"
 )
@@ -64,6 +66,11 @@ var (
 	ArcBrowser = browserFromSpec(browsercfg.MustChromium("arc"))
 )
 
+// BrowserFromSpec builds a Chromium browser definition from config metadata.
+func BrowserFromSpec(spec browsercfg.ChromiumSpec) Browser {
+	return browserFromSpec(spec)
+}
+
 func browserFromSpec(spec browsercfg.ChromiumSpec) Browser {
 	browser := Browser{
 		Name:               spec.Name,
@@ -108,4 +115,32 @@ func browserFromSpec(spec browsercfg.ChromiumSpec) Browser {
 		}
 	}
 	return browser
+}
+
+func dedupeCookieFiles(paths []string) []string {
+	seenPaths := map[string]struct{}{}
+	seenInfos := make([]os.FileInfo, 0, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := seenPaths[path]; ok {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err == nil {
+			duplicate := false
+			for _, seenInfo := range seenInfos {
+				if os.SameFile(info, seenInfo) {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			seenInfos = append(seenInfos, info)
+		}
+		seenPaths[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
 }

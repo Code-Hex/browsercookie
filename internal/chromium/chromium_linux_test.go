@@ -12,13 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Code-Hex/browsercookie/internal/browsercfg"
 	"golang.org/x/crypto/pbkdf2"
 	_ "modernc.org/sqlite"
 )
 
 func TestLoaderLoadFallsBackToPeanutsOnLinux(t *testing.T) {
-	t.Parallel()
-
 	key := pbkdf2.Key([]byte("peanuts"), []byte(chromiumSalt), chromiumIterations, chromiumKeyLength, sha1.New)
 	cookieFile := filepath.Join(t.TempDir(), "Cookies")
 	expires := time.Unix(1_700_000_000, 0).UTC()
@@ -48,8 +47,6 @@ func TestLoaderLoadFallsBackToPeanutsOnLinux(t *testing.T) {
 }
 
 func TestLinuxPasswordsUsesConfiguredOrderAndDedupes(t *testing.T) {
-	t.Parallel()
-
 	original := newLinuxKeyringClient
 	t.Cleanup(func() { newLinuxKeyringClient = original })
 
@@ -80,6 +77,28 @@ func TestLinuxPasswordsUsesConfiguredOrderAndDedupes(t *testing.T) {
 	}
 	if string(passwords[0]) != "first" || string(passwords[1]) != "second" {
 		t.Fatalf("passwords = %q, want first then second", passwords)
+	}
+}
+
+func TestLinuxPasswordsUsesElectronFallbackCandidates(t *testing.T) {
+	original := newLinuxKeyringClient
+	t.Cleanup(func() { newLinuxKeyringClient = original })
+
+	newLinuxKeyringClient = func() (linuxKeyringClient, error) {
+		return fakeLinuxKeyringClient{
+			secretPasswords: map[string][]byte{
+				"chrome_libsecret_os_crypt_password_v2|chrome": []byte("fallback"),
+			},
+		}, nil
+	}
+
+	browser := BrowserFromSpec(browsercfg.ElectronSpec("Code", nil, nil))
+	passwords := linuxPasswords(browser)
+	if len(passwords) != 1 {
+		t.Fatalf("len(passwords) = %d, want 1", len(passwords))
+	}
+	if string(passwords[0]) != "fallback" {
+		t.Fatalf("passwords[0] = %q, want %q", passwords[0], "fallback")
 	}
 }
 

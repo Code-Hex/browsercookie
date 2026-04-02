@@ -73,6 +73,7 @@ func (l Loader) Load(browser Browser, cookieFiles, domains []string) ([]*http.Co
 	if len(cookieFiles) == 0 {
 		cookieFiles = pathutil.Expand(browser.CookieFilePatterns)
 	}
+	cookieFiles = dedupeCookieFiles(cookieFiles)
 	if len(cookieFiles) == 0 {
 		return nil, errdefs.ErrNotFound
 	}
