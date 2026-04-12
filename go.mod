@@ -3,11 +3,11 @@ module github.com/Code-Hex/browsercookie
 go 1.25.0
 
 require (
-	github.com/godbus/dbus/v5 v5.1.0
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/pierrec/lz4/v4 v4.1.26
-	golang.org/x/crypto v0.49.0
-	golang.org/x/sys v0.42.0
-	modernc.org/sqlite v1.48.0
+	golang.org/x/crypto v0.50.0
+	golang.org/x/sys v0.43.0
+	modernc.org/sqlite v1.48.2
 )
 
 require (
